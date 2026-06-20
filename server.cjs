@@ -24,7 +24,7 @@ const db = new sqlite3.Database('./ekspedisi.db', (err) => {
 
 // Reset table for fresh testing with fixed encryption
 db.serialize(() => {
-    // db.run(`DROP TABLE IF EXISTS shipments`); 
+    db.run(`DROP TABLE IF EXISTS shipments`); 
     db.run(`CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tracking_number TEXT UNIQUE,
@@ -34,16 +34,27 @@ db.serialize(() => {
         sender_addr_enc TEXT,
         receiver_name_enc TEXT,
         receiver_phone_enc TEXT,
-        receiver_kec_enc TEXT,
+        receiver_kec TEXT,
         receiver_addr_enc TEXT,
         item_name_enc TEXT,
         item_category_enc TEXT,
+        item_desc_enc TEXT,
         item_notes TEXT,
+        courier_notes TEXT,
         insurance_enc TEXT,
+        item_value_enc TEXT,
+        insurance_fee_enc TEXT,
+        cod_amount_enc TEXT,
         nonce TEXT,
         service_type TEXT,
         weight REAL,
         status TEXT DEFAULT 'Pending',
+        payment_method TEXT DEFAULT 'Cash',
+        use_insurance INTEGER DEFAULT 0,
+        quantity INTEGER DEFAULT 1,
+        length REAL DEFAULT 0,
+        width REAL DEFAULT 0,
+        height REAL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 });
@@ -130,7 +141,9 @@ app.post('/api/shipments', (req, res) => {
     const { 
         senderName, senderPhone, senderKec, senderAddr,
         receiverName, receiverPhone, receiverKec, receiverAddr,
-        itemName, itemCategory, itemDesc, insuranceValue, service, weight 
+        itemName, itemCategory, itemDesc, insuranceValue, itemValue, service, weight,
+        paymentMethod, codAmount, useInsurance,
+        itemNotes, courierNotes, quantity, length, width, height
     } = req.body;
     
     const tracking_number = 'EJA-' + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -140,21 +153,29 @@ app.post('/api/shipments', (req, res) => {
     const nonceB64 = nonce.toString('base64');
     const enc = (data) => (data !== undefined && data !== null && data !== '') ? processChaCha20(SECRET_KEY, nonceB64, data.toString()).toString('base64') : '';
 
+    // Insurance fee = 0.2% of item value (encrypted)
+    const calcInsuranceFee = useInsurance && itemValue ? Math.ceil(parseFloat(itemValue) * 0.002) : 0;
+
     console.log(`POST /api/shipments - Saving new shipment...`);
 
     db.run(`INSERT INTO shipments (
         tracking_number, 
         sender_name_enc, sender_phone_enc, sender_kec_enc, sender_addr_enc,
-        receiver_name_enc, receiver_phone_enc, receiver_kec_enc, receiver_addr_enc,
-        item_name_enc, item_category_enc, item_notes, insurance_enc, 
-        nonce, service_type, weight, status
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        receiver_name_enc, receiver_phone_enc, receiver_kec, receiver_addr_enc,
+        item_name_enc, item_category_enc, item_desc_enc, item_notes, courier_notes, 
+        insurance_enc, item_value_enc, insurance_fee_enc, cod_amount_enc,
+        nonce, service_type, weight, status, payment_method, use_insurance,
+        quantity, length, width, height
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
             tracking_number, 
             enc(senderName), enc(senderPhone), enc(senderKec), enc(senderAddr),
-            enc(receiverName), enc(receiverPhone), enc(receiverKec), enc(receiverAddr),
-            enc(itemName), enc(itemCategory), itemDesc, enc(insuranceValue),
-            nonceB64, service, weight, 'Pending'
+            enc(receiverName), enc(receiverPhone), receiverKec, enc(receiverAddr),
+            enc(itemName), enc(itemCategory), enc(itemDesc), itemNotes, courierNotes,
+            enc(itemValue), enc(itemValue), enc(calcInsuranceFee), enc(codAmount),
+            nonceB64, service, weight, 'Pending',
+            paymentMethod || 'Cash', useInsurance ? 1 : 0,
+            quantity || 1, length || 0, width || 0, height || 0
         ],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
