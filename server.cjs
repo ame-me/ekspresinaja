@@ -25,6 +25,45 @@ const db = new sqlite3.Database('./ekspedisi.db', (err) => {
 // Reset table for fresh testing with fixed encryption
 db.serialize(() => {
     db.run(`DROP TABLE IF EXISTS shipments`); 
+    db.run(`DROP TABLE IF EXISTS users`); 
+    db.run(`DROP TABLE IF EXISTS branches`); 
+    db.run(`DROP TABLE IF EXISTS address_book`); 
+    db.run(`DROP TABLE IF EXISTS audit_logs`); 
+
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        address TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS address_book (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT,
+        phone TEXT,
+        province TEXT,
+        city TEXT,
+        district TEXT,
+        street TEXT,
+        rt TEXT,
+        rw TEXT,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        action TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tracking_number TEXT UNIQUE,
@@ -55,8 +94,21 @@ db.serialize(() => {
         length REAL DEFAULT 0,
         width REAL DEFAULT 0,
         height REAL DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        customer_id INTEGER,
+        role_type TEXT,
+        delivery_type TEXT,
+        branch_name TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(customer_id) REFERENCES users(id)
     )`);
+
+    // Seed default data
+    db.run(`INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin', 'admin')`);
+    db.run(`INSERT OR IGNORE INTO users (username, password, role) VALUES ('customer', 'customer', 'customer')`);
+
+    db.run(`INSERT OR IGNORE INTO branches (name, address) VALUES ('Jakarta Pusat Hub', 'Jl. Menteng No. 12, Jakarta Pusat')`);
+    db.run(`INSERT OR IGNORE INTO branches (name, address) VALUES ('Bandung City Hub', 'Jl. Lengkong No. 8, Bandung')`);
+    db.run(`INSERT OR IGNORE INTO branches (name, address) VALUES ('Surabaya Utama Hub', 'Jl. Gubeng No. 5, Surabaya')`);
 });
 
 /**
@@ -118,6 +170,7 @@ app.get('/', (req, res) => {
 
 // API
 // PUBLIC TRACKING API
+// PUBLIC TRACKING API
 app.get('/api/track/:number', (req, res) => {
     const { number } = req.params;
     db.get("SELECT * FROM shipments WHERE tracking_number = ?", [number], (err, row) => {
@@ -129,9 +182,104 @@ app.get('/api/track/:number', (req, res) => {
 
 app.get('/api/key', (req, res) => res.json({ key: SECRET_KEY }));
 
+// AUTH ENDPOINTS
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, password], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(401).json({ error: 'Username atau password salah!' });
+        res.json({ id: row.id, username: row.username, role: row.role });
+    });
+});
+
+app.post('/api/register', (req, res) => {
+    const { username, password } = req.body;
+    db.run("INSERT INTO users (username, password, role) VALUES (?, ?, 'customer')", [username, password], function(err) {
+        if (err) {
+            if (err.message.includes('UNIQUE constraint failed')) {
+                return res.status(400).json({ error: 'Username sudah terdaftar!' });
+            }
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ success: true, id: this.lastID });
+    });
+});
+
+// BRANCH ENDPOINTS
+app.get('/api/branches', (req, res) => {
+    db.all("SELECT * FROM branches ORDER BY name ASC", [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.post('/api/branches', (req, res) => {
+    const { name, address } = req.body;
+    db.run("INSERT INTO branches (name, address) VALUES (?, ?)", [name, address], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ id: this.lastID, name, address });
+    });
+});
+
+app.delete('/api/branches/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    db.run("DELETE FROM branches WHERE id = ?", [id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Success' });
+    });
+});
+
+// ADDRESS BOOK ENDPOINTS
+app.get('/api/address-book', (req, res) => {
+    const { userId } = req.query;
+    db.all("SELECT * FROM address_book WHERE user_id = ? ORDER BY name ASC", [userId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.post('/api/address-book', (req, res) => {
+    const { userId, name, phone, province, city, district, street, rt, rw } = req.body;
+    db.run(
+        "INSERT INTO address_book (user_id, name, phone, province, city, district, street, rt, rw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [userId, name, phone, province, city, district, street, rt, rw],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ id: this.lastID });
+        }
+    );
+});
+
+// AUDIT LOG ENDPOINTS
+app.get('/api/audit-logs', (req, res) => {
+    db.all("SELECT * FROM audit_logs ORDER BY timestamp DESC", [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.post('/api/audit-logs', (req, res) => {
+    const { username, action } = req.body;
+    db.run("INSERT INTO audit_logs (username, action) VALUES (?, ?)", [username, action], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ id: this.lastID });
+    });
+});
+
+// SHIPMENTS ENDPOINTS
 app.get('/api/shipments', (req, res) => {
-    console.log('GET /api/shipments - Fetching all data');
-    db.all("SELECT * FROM shipments ORDER BY created_at DESC", [], (err, rows) => {
+    const customerId = req.query.customer_id;
+    console.log(`GET /api/shipments - Fetching data. Customer ID filter: ${customerId || 'none'}`);
+    
+    let query = "SELECT * FROM shipments";
+    const params = [];
+    if (customerId) {
+        query += " WHERE customer_id = ?";
+        params.push(customerId);
+    }
+    query += " ORDER BY created_at DESC";
+
+    db.all(query, params, (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
@@ -143,7 +291,8 @@ app.post('/api/shipments', (req, res) => {
         receiverName, receiverPhone, receiverKec, receiverAddr,
         itemName, itemCategory, itemDesc, insuranceValue, itemValue, service, weight,
         paymentMethod, codAmount, useInsurance,
-        itemNotes, courierNotes, quantity, length, width, height
+        itemNotes, courierNotes, quantity, length, width, height,
+        customerId, roleType, deliveryType, branchName
     } = req.body;
     
     const tracking_number = 'EJA-' + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -165,8 +314,8 @@ app.post('/api/shipments', (req, res) => {
         item_name_enc, item_category_enc, item_desc_enc, item_notes, courier_notes, 
         insurance_enc, item_value_enc, insurance_fee_enc, cod_amount_enc,
         nonce, service_type, weight, status, payment_method, use_insurance,
-        quantity, length, width, height
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        quantity, length, width, height, customer_id, role_type, delivery_type, branch_name
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
             tracking_number, 
             enc(senderName), enc(senderPhone), enc(senderKec), enc(senderAddr),
@@ -175,7 +324,8 @@ app.post('/api/shipments', (req, res) => {
             enc(itemValue), enc(itemValue), enc(calcInsuranceFee), enc(codAmount),
             nonceB64, service, weight, 'Pending',
             paymentMethod || 'Cash', useInsurance ? 1 : 0,
-            quantity || 1, length || 0, width || 0, height || 0
+            quantity || 1, length || 0, width || 0, height || 0,
+            customerId || null, roleType || 'sender', deliveryType || 'pickup', branchName || null
         ],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });

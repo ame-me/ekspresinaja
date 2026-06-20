@@ -3,21 +3,44 @@ import REGIONS_DATA from './indonesia_regions.json';
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState(null); // { id, username, role }
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
+  
   const [shipments, setShipments] = useState([]);
   const [serverKey, setServerKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [decryptedData, setDecryptedData] = useState({});
-  const [currentView, setCurrentView] = useState('dashboard');
+  const [currentView, setCurrentView] = useState('login');
   const [dbConnected, setDbConnected] = useState(false);
   const [loginData, setLoginData] = useState({ username: '', password: '' });
+  const [registerData, setRegisterData] = useState({ username: '', password: '', confirmPassword: '' });
   const [searchTerm, setSearchTerm] = useState('');
   const [checkoutData, setCheckoutData] = useState(null);
   
-  const [securityLogs, setSecurityLogs] = useState([
-    { id: 1, time: '10:00 AM', msg: 'System initialized with IP Master Key.', type: 'info' },
-    { id: 2, time: '10:05 AM', msg: 'ChaCha20 ARX Rounds validated.', type: 'success' }
-  ]);
-  
+  // Custom Role & Fitur States
+  const [branches, setBranches] = useState([]);
+  const [addressBook, setAddressBook] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditActive, setAuditActive] = useState(false);
+
+  // Customer Form Options
+  const [customerRole, setCustomerRole] = useState('sender'); // 'sender' | 'receiver'
+  const [deliveryType, setDeliveryType] = useState('pickup'); // 'pickup' | 'dropoff'
+  const [selectedBranchName, setSelectedBranchName] = useState('');
+  const [saveSenderAddress, setSaveSenderAddress] = useState(false);
+  const [saveReceiverAddress, setSaveReceiverAddress] = useState(false);
+
+  const [selectedSavedSender, setSelectedSavedSender] = useState('');
+  const [selectedSavedReceiver, setSelectedSavedReceiver] = useState('');
+
+  // Branch Management state
+  const [newBranch, setNewBranch] = useState({ name: '', address: '' });
+
+  // Address Book manual add state
+  const [newAddress, setNewAddress] = useState({
+    name: '', phone: '', province: '', city: '', district: '', street: '', rt: '', rw: ''
+  });
+
   const [formData, setFormData] = useState({
     senderName: '', senderPhone: '', senderKec: '', senderAddr: '',
     receiverName: '', receiverPhone: '', receiverKec: '', receiverAddr: '',
@@ -25,34 +48,46 @@ function App() {
     service: 'Reguler', insuranceValue: 0, weight: 1, itemValue: 0,
     paymentMethod: 'Cash', codAmount: 0, useInsurance: false,
     
-    // Alamat detail dipisah
     senderJalan: '', senderRT: '', senderRW: '',
     receiverJalan: '', receiverRT: '', receiverRW: '',
     
-    // Daerah bertingkat
     senderProv: '', senderCity: '',
     receiverProv: '', receiverCity: '',
     
-    // Detail fisik barang
-    quantity: 1,
-    length: '',
-    width: '',
-    height: '',
-    
-    // Dropdown instruksi utama
-    itemNotes: 'Jangan dibanting (Fragile)',
-    // Teks catatan kurir opsional
-    courierNotes: ''
+    quantity: 1, length: '', width: '', height: '',
+    itemNotes: 'Jangan dibanting (Fragile)', courierNotes: ''
   });
 
   const API_URL = `http://${window.location.hostname}:5000/api`;
 
+  // Sync auth and views
   useEffect(() => {
-    if (isLoggedIn) {
-      fetchShipments();
-      fetchKey();
+    fetchKey();
+    fetchBranches();
+  }, []);
+
+  useEffect(() => {
+    if (isLoggedIn && user) {
+      if (user.role === 'admin') {
+        setCurrentView('dashboard');
+        fetchShipments();
+        fetchAuditLogs();
+      } else {
+        setCurrentView('customer_dashboard');
+        fetchShipments(user.id);
+        fetchAddressBook(user.id);
+      }
+    } else {
+      setCurrentView('login');
     }
-  }, [isLoggedIn]);
+  }, [isLoggedIn, user]);
+
+  // Auto-decrypt for customer shipments
+  useEffect(() => {
+    if (isLoggedIn && user && user.role === 'customer' && shipments.length > 0) {
+      autoDecryptCustomerShipments();
+    }
+  }, [shipments]);
 
   const fetchKey = async () => {
     try {
@@ -61,71 +96,321 @@ function App() {
       const data = await response.json();
       setServerKey(data.key);
       setDbConnected(true);
-      addLog('Master Key synchronized with server.', 'success');
     } catch (err) { 
       console.error(err);
       setDbConnected(false);
-      addLog('Failed to sync Master Key. Check server!', 'warning');
     }
   }
 
-  const fetchShipments = async () => {
+  const fetchShipments = async (customerId = null) => {
     try {
-      const response = await fetch(`${API_URL}/shipments`);
+      const url = customerId 
+        ? `${API_URL}/shipments?customer_id=${customerId}` 
+        : `${API_URL}/shipments`;
+      const response = await fetch(url);
       const data = await response.json();
       setShipments(data);
-    } catch (err) { console.error(err); }
-  };
-
-  const addLog = (msg, type = 'info') => {
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setSecurityLogs(prev => [{ id: Date.now(), time, msg, type }, ...prev].slice(0, 5));
-  };
-
-  const handleLogin = (e) => {
-    e.preventDefault();
-    if (loginData.username === 'admin' && loginData.password === 'admin') {
-      setIsLoggedIn(true);
-      addLog('Admin authenticated via secure gateway.', 'success');
-    } else {
-      alert("Akses Ditolak!");
-      addLog('Unauthorized login attempt.', 'warning');
+    } catch (err) { 
+      console.error(err); 
     }
   };
 
-
-  const updateStatus = async (id, newStatus) => {
+  const fetchBranches = async () => {
     try {
-      const response = await fetch(`${API_URL}/shipments/${id}/status`, {
-        method: 'PUT',
+      const response = await fetch(`${API_URL}/branches`);
+      const data = await response.json();
+      setBranches(data);
+    } catch (err) { 
+      console.error(err); 
+    }
+  };
+
+  const fetchAddressBook = async (userId) => {
+    try {
+      const response = await fetch(`${API_URL}/address-book?userId=${userId}`);
+      const data = await response.json();
+      setAddressBook(data);
+    } catch (err) { 
+      console.error(err); 
+    }
+  };
+
+  const fetchAuditLogs = async () => {
+    try {
+      const response = await fetch(`${API_URL}/audit-logs`);
+      const data = await response.json();
+      setAuditLogs(data);
+    } catch (err) { 
+      console.error(err); 
+    }
+  };
+
+  const logAuditEvent = async (action) => {
+    if (!user) return;
+    try {
+      await fetch(`${API_URL}/audit-logs`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ username: user.username, action })
+      });
+      fetchAuditLogs();
+    } catch (err) {
+      console.error('Audit logging failed:', err);
+    }
+  };
+
+  // Auth Handlers
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginData)
       });
       const data = await response.json();
-      if (response.ok && data.message === 'Success') {
-        await fetchShipments();
-        addLog(`Status: ${newStatus}`, 'success');
+      if (response.ok) {
+        setUser(data);
+        setIsLoggedIn(true);
+      } else {
+        alert(data.error || 'Gagal masuk');
       }
-    } catch (err) { console.error(err); }
-  };
-
-  const handleCycleStatus = (item) => {
-    const currentStatus = item.status;
-    let nextStatus;
-    if (currentStatus === 'Pending') {
-      const confirmPay = window.confirm(`Konfirmasi pelunasan pembayaran untuk resi ${item.tracking_number}?`);
-      if (!confirmPay) return;
-      nextStatus = 'Ready to Ship';
-    } else if (currentStatus === 'Ready to Ship') {
-      nextStatus = 'In Transit';
-    } else if (currentStatus === 'In Transit') {
-      nextStatus = 'Delivered';
-    } else {
-      nextStatus = 'Pending';
+    } catch (err) {
+      console.error(err);
+      alert('Koneksi ke server gagal.');
+    } finally {
+      setLoading(false);
     }
-    updateStatus(item.id, nextStatus);
   };
 
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    if (registerData.password !== registerData.confirmPassword) {
+      return alert('Konfirmasi password tidak cocok!');
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: registerData.username,
+          password: registerData.password
+        })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        alert('Registrasi berhasil! Silakan masuk.');
+        setAuthMode('login');
+        setRegisterData({ username: '', password: '', confirmPassword: '' });
+      } else {
+        alert(data.error || 'Gagal daftar');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Koneksi ke server gagal.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignOut = () => {
+    setIsLoggedIn(false);
+    setUser(null);
+    setDecryptedData({});
+    setAuditActive(false);
+    setLoginData({ username: '', password: '' });
+  };
+
+  // Auto-decrypt all customer shipments in background
+  const autoDecryptCustomerShipments = async () => {
+    for (const item of shipments) {
+      if (decryptedData[`receiver_${item.id}`]) continue; // already decrypted
+      
+      const payload = {
+        sender: item.sender_name_enc,
+        sender_phone: item.sender_phone_enc,
+        sender_kec: item.sender_kec_enc,
+        sender_addr: item.sender_addr_enc,
+        receiver: item.receiver_name_enc,
+        receiver_phone: item.receiver_phone_enc,
+        receiver_addr: item.receiver_addr_enc,
+        item_name: item.item_name_enc,
+        item_cat: item.item_category_enc,
+        item_desc: item.item_desc_enc,
+        insurance: item.insurance_enc,
+        item_value: item.item_value_enc,
+        insurance_fee: item.insurance_fee_enc,
+        cod_amount: item.cod_amount_enc
+      };
+
+      try {
+        const decryptedResults = {};
+        for (const [key, encryptedData] of Object.entries(payload)) {
+          if (!encryptedData) continue;
+          const res = await fetch(`${API_URL}/decrypt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ encryptedData, nonceBase64: item.nonce })
+          });
+          const data = await res.json();
+          decryptedResults[`${key}_${item.id}`] = data.decrypted;
+        }
+        setDecryptedData(prev => ({ ...prev, ...decryptedResults }));
+      } catch (err) {
+        console.error('Auto-decrypt error for shipment:', item.id, err);
+      }
+    }
+  };
+
+  // Branch operations
+  const handleAddBranch = async (e) => {
+    e.preventDefault();
+    if (!newBranch.name || !newBranch.address) return;
+    try {
+      const response = await fetch(`${API_URL}/branches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newBranch)
+      });
+      if (response.ok) {
+        fetchBranches();
+        setNewBranch({ name: '', address: '' });
+        logAuditEvent(`Added new branch: ${newBranch.name}`);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteBranch = async (id, branchName) => {
+    if (!window.confirm(`Hapus cabang ${branchName}?`)) return;
+    try {
+      const response = await fetch(`${API_URL}/branches/${id}`, {
+        method: 'DELETE'
+      });
+      if (response.ok) {
+        fetchBranches();
+        logAuditEvent(`Deleted branch: ${branchName}`);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Address Book operations
+  const handleAddAddress = async (e) => {
+    e.preventDefault();
+    if (!newAddress.name || !newAddress.phone) return alert('Nama dan No. Telp wajib diisi!');
+    try {
+      const street = newAddress.street || '';
+      const rt = newAddress.rt || '';
+      const rw = newAddress.rw || '';
+      const response = await fetch(`${API_URL}/address-book`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          name: newAddress.name,
+          phone: newAddress.phone,
+          province: newAddress.province,
+          city: newAddress.city,
+          district: newAddress.district,
+          street, rt, rw
+        })
+      });
+      if (response.ok) {
+        fetchAddressBook(user.id);
+        setNewAddress({
+          name: '', phone: '', province: '', city: '', district: '', street: '', rt: '', rw: ''
+        });
+        alert('Alamat berhasil disimpan!');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Pre-fill fields from Address Book selection
+  const handleSelectSavedAddress = (type, addressId) => {
+    if (!addressId) {
+      if (type === 'sender') {
+        setSelectedSavedSender('');
+        setFormData(prev => ({
+          ...prev,
+          senderName: '', senderPhone: '', senderProv: '', senderCity: '', senderKec: '',
+          senderJalan: '', senderRT: '', senderRW: ''
+        }));
+      } else {
+        setSelectedSavedReceiver('');
+        setFormData(prev => ({
+          ...prev,
+          receiverName: '', receiverPhone: '', receiverProv: '', receiverCity: '', receiverKec: '',
+          receiverJalan: '', receiverRT: '', receiverRW: ''
+        }));
+      }
+      return;
+    }
+
+    const selected = addressBook.find(a => a.id === parseInt(addressId));
+    if (!selected) return;
+
+    if (type === 'sender') {
+      setSelectedSavedSender(addressId);
+      setFormData(prev => ({
+        ...prev,
+        senderName: selected.name,
+        senderPhone: selected.phone,
+        senderProv: selected.province,
+        senderCity: selected.city,
+        senderKec: selected.district,
+        senderJalan: selected.street,
+        senderRT: selected.rt,
+        senderRW: selected.rw
+      }));
+    } else {
+      setSelectedSavedReceiver(addressId);
+      setFormData(prev => ({
+        ...prev,
+        receiverName: selected.name,
+        receiverPhone: selected.phone,
+        receiverProv: selected.province,
+        receiverCity: selected.city,
+        receiverKec: selected.district,
+        receiverJalan: selected.street,
+        receiverRT: selected.rt,
+        receiverRW: selected.rw
+      }));
+    }
+  };
+
+  // Handle Customer Role Changes (Sender vs Receiver pre-fill)
+  useEffect(() => {
+    if (isLoggedIn && user && user.role === 'customer') {
+      if (customerRole === 'sender') {
+        // Pre-fill sender with customer info, clear receiver
+        setFormData(prev => ({
+          ...prev,
+          senderName: user.username.toUpperCase(),
+          senderPhone: '08123456789', // default mock phone
+          receiverName: '', receiverPhone: '', receiverProv: '', receiverCity: '', receiverKec: '',
+          receiverJalan: '', receiverRT: '', receiverRW: ''
+        }));
+      } else {
+        // Pre-fill receiver with customer info, clear sender
+        setFormData(prev => ({
+          ...prev,
+          receiverName: user.username.toUpperCase(),
+          receiverPhone: '08123456789',
+          senderName: '', senderPhone: '', senderProv: '', senderCity: '', senderKec: '',
+          senderJalan: '', senderRT: '', senderRW: ''
+        }));
+      }
+    }
+  }, [customerRole, isLoggedIn, user]);
+
+  // Main Submit Handler (Shipment Registration)
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -145,7 +430,12 @@ function App() {
         receiverKec: combinedReceiverKec,
         insuranceValue: formData.useInsurance ? formData.itemValue : 0,
         insuranceFee: insuranceFee,
-        itemValue: formData.useInsurance ? formData.itemValue : 0
+        itemValue: formData.useInsurance ? formData.itemValue : 0,
+        
+        customerId: user ? user.id : null,
+        roleType: customerRole,
+        deliveryType: deliveryType,
+        branchName: deliveryType === 'dropoff' ? selectedBranchName : null
       };
       
       const response = await fetch(`${API_URL}/shipments`, {
@@ -153,10 +443,28 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      
       if (response.ok) {
         const result = await response.json();
         
-        // Calculate costs for receipt modal
+        // Save to address book if checked
+        if (saveSenderAddress && customerRole !== 'sender') {
+          // If customer role is receiver, we might want to save the entered sender address
+          await saveToAddressBook(
+            formData.senderName, formData.senderPhone, formData.senderProv,
+            formData.senderCity, formData.senderKec, formData.senderJalan,
+            formData.senderRT, formData.senderRW
+          );
+        }
+        if (saveReceiverAddress && customerRole !== 'receiver') {
+          // If customer role is sender, save the entered receiver address
+          await saveToAddressBook(
+            formData.receiverName, formData.receiverPhone, formData.receiverProv,
+            formData.receiverCity, formData.receiverKec, formData.receiverJalan,
+            formData.receiverRT, formData.receiverRW
+          );
+        }
+
         const baseRate = 10000;
         const multiplier = formData.service === 'Ekspres' ? 1.5 : formData.service === 'Same Day' ? 2 : 1;
         const shippingCost = (formData.weight * baseRate * multiplier) + 5000;
@@ -176,7 +484,7 @@ function App() {
           totalCost: totalCost
         });
 
-        // Reset form
+        // Reset
         setFormData({ 
           senderName: '', senderPhone: '', senderKec: '', senderAddr: '',
           receiverName: '', receiverPhone: '', receiverKec: '', receiverAddr: '',
@@ -190,28 +498,84 @@ function App() {
           quantity: 1, length: '', width: '', height: '',
           itemNotes: 'Jangan dibanting (Fragile)', courierNotes: ''
         });
-        
-        fetchShipments();
-        addLog(`New shipment secured and saved.`, 'success');
+
+        setSaveSenderAddress(false);
+        setSaveReceiverAddress(false);
+        setSelectedSavedSender('');
+        setSelectedSavedReceiver('');
+        setSelectedBranchName('');
+
+        fetchShipments(user.id);
+        fetchAddressBook(user.id);
       } else {
         const errorData = await response.json();
         alert(`Gagal menyimpan: ${errorData.error || 'Server error'}`);
-        addLog(`Failed to save shipment: ${errorData.error}`, 'warning');
       }
     } catch (err) { 
       console.error(err); 
-      alert("Gagal menghubungi server. Pastikan server backend sudah jalan (node server.cjs)");
-      addLog(`Connection error: ${err.message}`, 'warning');
+      alert("Gagal menghubungi server.");
+    } finally {
+      setLoading(false);
     }
-    finally { setLoading(false); }
   };
 
-  const handleDecrypt = async (id, itemsToDecrypt, nonce) => {
+  const saveToAddressBook = async (name, phone, prov, city, dist, street, rt, rw) => {
     try {
-      addLog(`Decrypting dataset ${id}...`, 'info');
+      await fetch(`${API_URL}/address-book`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          name, phone, province: prov, city, district: dist, street, rt, rw
+        })
+      });
+    } catch (e) {
+      console.error('Failed to save to address book:', e);
+    }
+  };
+
+  // Status updates (Admin only)
+  const updateStatus = async (id, newStatus) => {
+    try {
+      const response = await fetch(`${API_URL}/shipments/${id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+      const data = await response.json();
+      if (response.ok && data.message === 'Success') {
+        await fetchShipments(user.role === 'customer' ? user.id : null);
+        logAuditEvent(`Updated shipment status ID ${id} to ${newStatus}`);
+      }
+    } catch (err) { 
+      console.error(err); 
+    }
+  };
+
+  const handleCycleStatus = (item) => {
+    if (user && user.role !== 'admin') return; // strictly admin
+    const currentStatus = item.status;
+    let nextStatus;
+    if (currentStatus === 'Pending') {
+      const confirmPay = window.confirm(`Konfirmasi pelunasan pembayaran untuk resi ${item.tracking_number}?`);
+      if (!confirmPay) return;
+      nextStatus = 'Ready to Ship';
+    } else if (currentStatus === 'Ready to Ship') {
+      nextStatus = 'In Transit';
+    } else if (currentStatus === 'In Transit') {
+      nextStatus = 'Delivered';
+    } else {
+      nextStatus = 'Pending';
+    }
+    updateStatus(item.id, nextStatus);
+  };
+
+  // Decryption for Auditing
+  const handleDecrypt = async (id, itemsToDecrypt, nonce, silent = false) => {
+    try {
       const decryptedResults = {};
-      
       for (const [key, encryptedData] of Object.entries(itemsToDecrypt)) {
+        if (!encryptedData) continue;
         const res = await fetch(`${API_URL}/decrypt`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -220,15 +584,19 @@ function App() {
         const data = await res.json();
         decryptedResults[`${key}_${id}`] = data.decrypted;
       }
-
       setDecryptedData(prev => ({ ...prev, ...decryptedResults }));
-      addLog(`ChaCha20 Decryption completed for ${id}.`, 'success');
-    } catch (err) { console.error(err); }
+      if (!silent) {
+        logAuditEvent(`Decrypted shipment data ID ${id} for security auditing`);
+      }
+    } catch (err) { 
+      console.error(err); 
+    }
   };
 
   const handleDecryptAll = async () => {
     if (shipments.length === 0) return;
-    addLog('Master audit decryption started...', 'warning');
+    setAuditActive(true);
+    logAuditEvent('Admin started full access manifest audit decryption');
     for (const item of shipments) {
       await handleDecrypt(item.id, {
         sender: item.sender_name_enc,
@@ -245,20 +613,19 @@ function App() {
         item_value: item.item_value_enc,
         insurance_fee: item.insurance_fee_enc,
         cod_amount: item.cod_amount_enc
-      }, item.nonce);
+      }, item.nonce, true); // silent because we already logged the main event
     }
   };
 
   const handleLock = (id) => {
     const newDecrypted = { ...decryptedData };
-    // Bersihkan semua data terkait ID ini
     Object.keys(newDecrypted).forEach(key => {
       if (key.endsWith(`_${id}`)) {
         delete newDecrypted[key];
       }
     });
     setDecryptedData(newDecrypted);
-    addLog(`Record ${id} re-locked for security.`, 'info');
+    logAuditEvent(`Re-locked shipment ID ${id}`);
   };
 
   const parseItemData = (item) => {
@@ -266,7 +633,6 @@ function App() {
     const weight = item.weight || 1;
     const baseRate = 10000;
     const multiplier = service === 'Ekspres' ? 1.5 : service === 'Same Day' ? 2 : 1;
-    // Hanya hitung ongkir — insurance_fee kini terenkripsi
     const shippingCost = (weight * baseRate * multiplier) + 5000;
     return { service, weight, type: 'Paket', shippingCost };
   };
@@ -277,33 +643,27 @@ function App() {
   };
 
   const calculateTotalRevenue = () => {
-    // Hanya hitung ongkir (insurance fee terenkripsi, tidak tersedia tanpa dekripsi)
     return shipments.reduce((total, item) => total + parseItemData(item).shippingCost, 0);
   };
 
-
+  // Printing Layouts
   const printReceipt = async (item) => {
     let sender = decryptedData[`sender_${item.id}`];
-    let senderPhone = decryptedData[`sender_phone_${item.id}`] || '';
-    let senderKec = decryptedData[`sender_kec_${item.id}`] || '';
-    let senderAddr = decryptedData[`sender_addr_${item.id}`] || '';
     let receiver = decryptedData[`receiver_${item.id}`];
     let addr = decryptedData[`receiver_addr_${item.id}`];
     let phone = decryptedData[`receiver_phone_${item.id}`];
     let kec = item.receiver_kec || '';
     
     if (!sender || !receiver || !addr) {
-      addLog(`Akses Ditolak: Data masih terenkripsi.`, 'warning');
       return alert("Akses Ditolak! Mohon dekripsi data terlebih dahulu sebelum mencetak resi.");
     }
     
-    if (item.status === 'Pending') {
+    if (user.role === 'admin' && item.status === 'Pending') {
       updateStatus(item.id, 'Ready to Ship');
     }
     
     const { service } = parseItemData(item);
     const win = window.open('', '_blank');
-    // COD amount diambil dari data terenkripsi
     const codDecrypted = decryptedData[`cod_amount_${item.id}`];
     const paymentMethodText = item.payment_method === 'COD' 
       ? `COD${codDecrypted ? ` - Rp ${parseInt(codDecrypted).toLocaleString()}` : ' (ENCODED)'}`
@@ -346,15 +706,15 @@ function App() {
             <div class="address-val" style="font-size:16px; margin-bottom:8px;">${phone}</div>
             <div class="address-val">${kec}, ${addr}</div>
           </div>
+          ${item.delivery_type === 'dropoff' ? `
+          <div class="address-box" style="background:#f0fdf4; border-top: 1px dashed #000;">
+            <div class="label-small" style="color:#16803d;">DROP OFF LOCATION</div>
+            <div class="address-val" style="font-size:13px; font-weight:700;">${item.branch_name || 'Kantor Cabang'}</div>
+          </div>` : ''}
           ${item.item_notes ? `
           <div class="address-box" style="background:#fff7ed; border-top: 1px dashed #000;">
             <div class="label-small" style="color:#c2410c;">INSTRUKSI PENANGANAN</div>
             <div class="address-val" style="font-size:14px; font-weight:900; text-transform:uppercase;">${item.item_notes}</div>
-          </div>` : ''}
-          ${item.courier_notes ? `
-          <div class="address-box" style="background:#f0fdf4; border-top: 1px dashed #000;">
-            <div class="label-small" style="color:#15803d;">CATATAN KURIR</div>
-            <div class="address-val" style="font-size:13px; font-weight:700;">${item.courier_notes}</div>
           </div>` : ''}
           <div class="security-footer">SECURED BY CHACHA20 // DATA PROTECTED</div>
         </div>
@@ -368,7 +728,7 @@ function App() {
     const totalRev = calculateTotalRevenue();
     win.document.write(`
       <html><head>
-        <title>Laporan Manifest & Audit Ekspresin Aja</title>
+        <title>Laporan Manifest & Audit - Admin Gateway</title>
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
           body { font-family: 'Outfit', sans-serif; padding: 30px; color: #0f172a; }
@@ -387,9 +747,9 @@ function App() {
         </style>
       </head>
       <body>
-        <h1>LAPORAN MANIFEST & AUDIT KEAMANAN</h1>
+        <h1>LAPORAN MANIFEST & OPERASIONAL GATEWAY</h1>
         <div class="meta-info">
-          <div><strong>EKSPRESIN AJA</strong> - Gateway Aman Terintegrasi</div>
+          <div><strong>EKSPRESIN AJA</strong> - Secure Logistics System</div>
           <div>Tanggal Cetak: ${new Date().toLocaleString()}</div>
         </div>
         <table>
@@ -463,7 +823,7 @@ function App() {
                   <td>
                     <strong>Deskripsi:</strong> ${itemDesc}<br/>
                     <strong>Instruksi:</strong> ${s.item_notes || '-'}<br/>
-                    <strong>Notes Kurir:</strong> ${s.courier_notes || '-'}
+                    <strong>Layanan:</strong> ${s.delivery_type === 'dropoff' ? 'Drop Off (' + (s.branch_name || 'Cabang') + ')' : 'Pick Up'}
                   </td>
                   <td>
                     <strong>Metode:</strong> ${s.payment_method || 'Cash'}<br/>
@@ -477,7 +837,7 @@ function App() {
             }).join('')}
           </tbody>
         </table>
-        <div class="footer">Total Ongkir: Rp ${totalRev.toLocaleString()} <span style="font-size:0.7rem; font-weight:normal;">(Nominal asuransi terenkripsi)</span></div>
+        <div class="footer">Total Revenue: Rp ${totalRev.toLocaleString()} <span style="font-size:0.7rem; font-weight:normal;">(Premi asuransi terenkripsi/tidak masuk total revenue)</span></div>
       </body></html>
     `);
     win.document.close(); win.print();
@@ -487,81 +847,136 @@ function App() {
     s.tracking_number.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  if (!isLoggedIn) {
+  // LOGIN & REGISTER SCREEN
+  if (currentView === 'login') {
     return (
       <div className="login-screen">
         <div className="login-card fade-in">
-          <div className="logo" style={{ marginBottom: '0.5rem', textAlign: 'center', width: '100%' }}>Ekspresin Aja</div>
-          <p style={{ textAlign: 'center', color: 'var(--text-dim)', marginBottom: '2.5rem', fontWeight: 600 }}>Administrator Authorization</p>
-          <form onSubmit={handleLogin}>
-            <div className="form-group"><label>Administrator ID</label><input type="text" placeholder="admin" onChange={e => setLoginData({...loginData, username: e.target.value})} /></div>
-            <div className="form-group"><label>Password</label><input type="password" placeholder="••••••••" onChange={e => setLoginData({...loginData, password: e.target.value})} /></div>
-            <button type="submit" className="btn-primary" style={{width: '100%', marginTop: '1rem'}}>Authorize & Open Gateway</button>
-          </form>
-          <p style={{marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-dim)'}}>Sistem Informasi Ekspedisi Aman Terintegrasi</p>
+          <div className="logo" style={{ marginBottom: '0.5rem', textAlign: 'center', width: '100%', fontSize: '2rem' }}>Ekspresin Aja</div>
+          <p style={{ textAlign: 'center', color: 'var(--text-dim)', marginBottom: '2.5rem', fontWeight: 600 }}>
+            {authMode === 'login' ? 'Secure Gateway Portal' : 'Register Customer Account'}
+          </p>
+          
+          <div style={{ display: 'flex', background: '#f1f5f9', padding: '5px', borderRadius: '12px', marginBottom: '2rem' }}>
+            <button 
+              className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
+              onClick={() => setAuthMode('login')}
+              style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              Sign In
+            </button>
+            <button 
+              className={`auth-tab ${authMode === 'register' ? 'active' : ''}`}
+              onClick={() => setAuthMode('register')}
+              style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              Sign Up (Customer)
+            </button>
+          </div>
+
+          {authMode === 'login' ? (
+            <form onSubmit={handleLogin}>
+              <div className="form-group"><label>Username</label><input type="text" placeholder="Masukkan username" value={loginData.username} onChange={e => setLoginData({...loginData, username: e.target.value})} required /></div>
+              <div className="form-group"><label>Password</label><input type="password" placeholder="••••••••" value={loginData.password} onChange={e => setLoginData({...loginData, password: e.target.value})} required /></div>
+              <button type="submit" className="btn-primary" style={{width: '100%', marginTop: '1.5rem', padding: '1rem'}} disabled={loading}>
+                {loading ? 'AUTHENTICATING...' : 'Sign In & Connect Gateway'}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleRegister}>
+              <div className="form-group"><label>Username Baru</label><input type="text" placeholder="Pilih username" value={registerData.username} onChange={e => setRegisterData({...registerData, username: e.target.value})} required /></div>
+              <div className="form-group"><label>Password</label><input type="password" placeholder="••••••••" value={registerData.password} onChange={e => setRegisterData({...registerData, password: e.target.value})} required /></div>
+              <div className="form-group"><label>Konfirmasi Password</label><input type="password" placeholder="••••••••" value={registerData.confirmPassword} onChange={e => setRegisterData({...registerData, confirmPassword: e.target.value})} required /></div>
+              <button type="submit" className="btn-primary" style={{width: '100%', marginTop: '1.5rem', padding: '1rem'}} disabled={loading}>
+                {loading ? 'REGISTERING...' : 'Create Account'}
+              </button>
+            </form>
+          )}
+          <p style={{marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-dim)'}}>Sistem Informasi Ekspedisi Aman Terintegrasi // ChaCha20</p>
         </div>
       </div>
     );
   }
 
+  // PROTECTED RENDERING (Admin vs Customer)
   return (
     <div className="dashboard-layout">
+      {/* SIDEBAR NAVIGATION */}
       <nav className="sidebar">
         <div className="logo" style={{ padding: '2.5rem 2rem' }}>Ekspresin Aja</div>
         <div className="nav-items">
-          <div className={`nav-item ${currentView === 'dashboard' ? 'active' : ''}`} onClick={() => setCurrentView('dashboard')}>Dashboard</div>
-          <div className={`nav-item ${currentView === 'registration' ? 'active' : ''}`} onClick={() => setCurrentView('registration')}>Input Pengiriman</div>
-          <div className={`nav-item ${currentView === 'manifest' ? 'active' : ''}`} onClick={() => setCurrentView('manifest')}>Monitoring Paket</div>
-          <div className={`nav-item ${currentView === 'reports' ? 'active' : ''}`} onClick={() => setCurrentView('reports')}>Statistik & Laporan</div>
+          {user && user.role === 'admin' ? (
+            <>
+              <div className={`nav-item ${currentView === 'dashboard' ? 'active' : ''}`} onClick={() => setCurrentView('dashboard')}>Dashboard</div>
+              <div className={`nav-item ${currentView === 'manifest' ? 'active' : ''}`} onClick={() => setCurrentView('manifest')}>Global Manifest</div>
+              <div className={`nav-item ${currentView === 'branches' ? 'active' : ''}`} onClick={() => setCurrentView('branches')}>Kelola Cabang</div>
+              <div className={`nav-item ${currentView === 'reports' ? 'active' : ''}`} onClick={() => setCurrentView('reports')}>Keamanan & Audit</div>
+            </>
+          ) : (
+            <>
+              <div className={`nav-item ${currentView === 'customer_dashboard' ? 'active' : ''}`} onClick={() => setCurrentView('customer_dashboard')}>Dashboard</div>
+              <div className={`nav-item ${currentView === 'customer_registration' ? 'active' : ''}`} onClick={() => setCurrentView('customer_registration')}>Kirim Paket</div>
+              <div className={`nav-item ${currentView === 'customer_tracking' ? 'active' : ''}`} onClick={() => setCurrentView('customer_tracking')}>Tracking Paket</div>
+              <div className={`nav-item ${currentView === 'customer_address' ? 'active' : ''}`} onClick={() => setCurrentView('customer_address')}>Buku Alamat</div>
+            </>
+          )}
         </div>
-        <div className="logout-btn" onClick={() => setIsLoggedIn(false)}>Sign Out</div>
+        <div className="logout-btn" onClick={handleSignOut}>Sign Out</div>
       </nav>
 
+      {/* CONTENT REGION */}
       <main className="content">
         <div className="header-dashboard fade-in">
           <div>
-            <h1>{currentView === 'dashboard' ? 'Dashboard' : currentView === 'registration' ? 'Input Pengiriman Baru' : currentView === 'manifest' ? 'Monitoring Manifest' : 'Statistik & Laporan'}</h1>
-            <p style={{ color: 'var(--text-dim)', fontWeight: 500 }}>Operasional Ekspedisi Terenkripsi</p>
+            <h1>
+              {user && user.role === 'admin' ? (
+                currentView === 'dashboard' ? 'Dashboard Admin' : 
+                currentView === 'manifest' ? 'Global Manifest' :
+                currentView === 'branches' ? 'Manajemen Cabang' : 'Keamanan & Audit Manifest'
+              ) : (
+                currentView === 'customer_dashboard' ? `Welcome back, ${user?.username}!` :
+                currentView === 'customer_registration' ? 'Kirim Paket Baru' :
+                currentView === 'customer_tracking' ? 'Tracking & Riwayat Paket' : 'Buku Alamat Saya'
+              )}
+            </h1>
+            <p style={{ color: 'var(--text-dim)', fontWeight: 500 }}>
+              {user?.role === 'admin' ? 'Operasional Keamanan Jaringan Ekspedisi' : 'Portal Logistik Pelanggan'}
+            </p>
           </div>
-          <div className="user-profile"><div className="status-dot"></div><span>Gateway: {serverKey}</span></div>
+          <div className="user-profile">
+            <div className="status-dot"></div>
+            <span>Peran: {user?.role.toUpperCase()} ({user?.username})</span>
+          </div>
         </div>
 
-        {currentView === 'dashboard' && (
+        {/* -------------------- ADMIN VIEWS -------------------- */}
+        {user?.role === 'admin' && currentView === 'dashboard' && (
           <div className="fade-in">
-            {!dbConnected && (
-              <div className="card" style={{background: '#fee2e2', border: '1px solid #ef4444', marginBottom: '2rem', color: '#b91c1c'}}>
-                <strong>⚠️ Server Offline:</strong> Data tidak dapat dimuat atau disimpan. Pastikan Anda menjalankan <code>npm run server</code> di terminal baru.
-              </div>
-            )}
-
             <div className="stats-grid">
-              <div className="stat-card" style={{borderLeft:'5px solid var(--primary)'}}><span className="stat-label">Total Shipments</span><div className="stat-value" style={{color:'var(--primary)'}}>{shipments.length}</div><div className="stat-trend" style={{color: dbConnected ? 'var(--success)' : 'var(--danger)'}}>{dbConnected ? 'DB Status: Connected' : 'DB Status: Disconnected'}</div></div>
-              <div className="stat-card" style={{borderLeft:'5px solid var(--success)'}}><span className="stat-label">Ready to Ship</span><div className="stat-value">{shipments.filter(s => s.status === 'Ready to Ship').length}</div><div className="stat-trend">Label Terbit</div></div>
+              <div className="stat-card" style={{borderLeft:'5px solid var(--primary)'}}><span className="stat-label">Total Shipments (Global)</span><div className="stat-value" style={{color:'var(--primary)'}}>{shipments.length}</div><div className="stat-trend" style={{color: 'var(--success)'}}>Operational Database Live</div></div>
+              <div className="stat-card" style={{borderLeft:'5px solid var(--success)'}}><span className="stat-label">Cabang Aktif</span><div className="stat-value">{branches.length}</div><div className="stat-trend">Branch Management Sync</div></div>
               <div className="stat-card" style={{borderLeft:'5px solid #6366f1'}}><span className="stat-label">Total Revenue</span><div className="stat-value" style={{fontSize:'1.5rem'}}>Rp {calculateTotalRevenue().toLocaleString()}</div><div className="stat-trend" style={{color:'var(--success)'}}>Live Income</div></div>
             </div>
 
             <div className="main-grid" style={{gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem'}}>
               <div className="card">
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem'}}>
-                  <h3>Recent Shipments</h3>
+                  <h3>Recent Global Shipments</h3>
                   <button className="btn-primary" style={{padding:'5px 15px', fontSize:'11px'}} onClick={() => setCurrentView('manifest')}>View All</button>
                 </div>
                 <div className="table-responsive">
                    <table className="custom-table" style={{fontSize:'0.85rem'}}>
-                     <thead><tr><th>Resi</th><th>Penerima</th><th>Layanan</th><th>Status</th></tr></thead>
+                     <thead><tr><th>Resi</th><th>Tujuan</th><th>Layanan</th><th>Status</th></tr></thead>
                      <tbody>
                        {shipments.slice(0, 6).map(s => {
                          const { service } = parseItemData(s);
                          return (
                            <tr key={s.id}>
                              <td style={{fontWeight:'bold', padding:'1rem 5px'}}>{s.tracking_number}</td>
-                             <td>{decryptedData[`receiver_${s.id}`] || '••••••••'}</td>
+                             <td>{s.receiver_kec || '••••••••'}</td>
                              <td><span className={`service-badge ${service === 'Ekspres' ? 'ekspres' : ''}`}>{service}</span></td>
                              <td>
-                               <span 
-                                 className={`status-badge status-${s.status.toLowerCase().replace(/ /g, '')}`}
-                                 style={{fontSize:'9px', padding: '4px 8px', whiteSpace: 'nowrap'}}
-                               >
+                               <span className={`status-badge status-${s.status.toLowerCase().replace(/ /g, '')}`}>
                                  {s.status}
                                </span>
                              </td>
@@ -578,32 +993,197 @@ function App() {
                   <h3>Security Health Pulse</h3>
                   <div className="pulse-container">
                     <div className="pulse-dot"></div>
-                    <span style={{fontSize:'9px', fontWeight:'900', color:'var(--success)'}}>LIVE PROTECTION</span>
+                    <span style={{fontSize:'9px', fontWeight:'900', color:'var(--success)'}}>AUDITING LIVE</span>
                   </div>
                 </div>
                 
                 <div className="security-metrics" style={{flex: 1}}>
-                  <div className="metric-row">
-                    <span className="metric-label">Algorithm</span>
-                    <span className="badge-tech">ChaCha20 (256-bit)</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">ARX Design</span>
-                    <span className="badge-tech">Add-Rotate-Xor</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Master Key</span>
-                    <span className="badge-tech" style={{maxWidth:'100px', overflow:'hidden', textOverflow:'ellipsis'}}>{serverKey}</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Data Integrity</span>
-                    <span style={{color:'var(--success)', fontWeight:'900', fontSize: '0.8rem'}}>Verified ✅</span>
-                  </div>
+                  <div className="metric-row"><span className="metric-label">Algorithm</span><span className="badge-tech">ChaCha20 (256-bit)</span></div>
+                  <div className="metric-row"><span className="metric-label">Data Integrity</span><span style={{color:'var(--success)', fontWeight:'900', fontSize: '0.8rem'}}>Verified ✅</span></div>
+                  <div className="metric-row"><span className="metric-label">Total Audit Events</span><span className="badge-tech">{auditLogs.length} Events</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
-                  <div style={{marginTop:'1.5rem', padding:'1rem', background:'#f0f9ff', borderRadius:'10px', border:'1px dashed #bae6fd'}}>
-                    <div style={{fontSize:'0.7rem', color:'#0369a1', lineHeight:'1.5'}}>
-                      <strong>Security Note:</strong> Data PII (Personal Identifiable Information) dienkripsi di level database menggunakan Stream Cipher untuk performa tinggi.
-                    </div>
+        {/* GLOBAL MANIFEST (ADMIN ONLY) */}
+        {user?.role === 'admin' && currentView === 'manifest' && (
+          <div className="fade-in">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <div className="search-bar-container" style={{ margin: 0, flex: 1, maxWidth: '400px' }}>
+                <input type="text" placeholder="Cari Resi..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" />
+              </div>
+              <button className="btn-primary" onClick={handleDecryptAll} style={{ background: '#059669', padding: '0.75rem 1.5rem' }}>
+                🔑 Audit Dekripsi (Full Access)
+              </button>
+            </div>
+
+            {auditActive && (
+              <div className="card" style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e3a8a', padding: '1rem', marginBottom: '1.5rem', borderRadius: '12px' }}>
+                ℹ️ <strong>Mode Audit Aktif:</strong> Semua dataset yang dimuat di bawah ini telah ter-dekripsi untuk monitoring keamanan. Tindakan ini tercatat di database audit log.
+              </div>
+            )}
+
+            <div className="card table-card">
+              <div className="table-responsive">
+                <table className="custom-table">
+                  <thead><tr><th>No. Resi</th><th>Kecamatan Tujuan</th><th>Pengirim (Decrypted)</th><th>Penerima (Decrypted)</th><th>Layanan</th><th>Status</th><th>Biaya</th><th>Aksi</th></tr></thead>
+                  <tbody>
+                    {filteredShipments.map(item => {
+                      const { service, shippingCost } = parseItemData(item);
+                      const isDecrypted = !!decryptedData[`receiver_${item.id}`];
+                      return (
+                        <tr key={item.id}>
+                          <td className="tracking-id">{item.tracking_number}</td>
+                          <td style={{fontWeight: 700}}>{item.receiver_kec || '-'}</td>
+                          <td style={{fontWeight: 700}}>{decryptedData[`sender_${item.id}`] || '🔒 LOCKED'}</td>
+                          <td style={{fontWeight: 700}}>{decryptedData[`receiver_${item.id}`] || '🔒 LOCKED'}</td>
+                          <td><span className={`service-badge ${service === 'Ekspres' ? 'ekspres' : ''}`}>{service}</span></td>
+                          <td>
+                             <span className={`status-badge status-${item.status.toLowerCase().replace(/ /g, '')}`} onClick={() => handleCycleStatus(item)} style={{cursor:'pointer'}}>
+                               {item.status}
+                             </span>
+                          </td>
+                          <td style={{fontWeight: 700}}>Rp {shippingCost.toLocaleString()}</td>
+                          <td>
+                            <div className="action-btns">
+                              {!isDecrypted ? (
+                                <button className="btn-action decrypt" onClick={() => handleDecrypt(item.id, {
+                                  sender: item.sender_name_enc,
+                                  sender_phone: item.sender_phone_enc,
+                                  sender_kec: item.sender_kec_enc,
+                                  sender_addr: item.sender_addr_enc,
+                                  receiver: item.receiver_name_enc,
+                                  receiver_addr: item.receiver_addr_enc,
+                                  receiver_phone: item.receiver_phone_enc,
+                                  item_name: item.item_name_enc,
+                                  item_cat: item.item_category_enc,
+                                  item_desc: item.item_desc_enc,
+                                  insurance: item.insurance_enc,
+                                  item_value: item.item_value_enc,
+                                  insurance_fee: item.insurance_fee_enc,
+                                  cod_amount: item.cod_amount_enc
+                                }, item.nonce)} title="Audit Dekripsi Baris">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path><path d="M12 11v-4"></path></svg>
+                                </button>
+                              ) : (
+                                <button className="btn-action lock" onClick={() => handleLock(item.id)} title="Kunci Kembali Data">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                                </button>
+                              )}
+                              <button className="btn-action print" onClick={() => printReceipt(item)} title="Cetak Label Resi">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* KELOLA CABANG (ADMIN ONLY) */}
+        {user?.role === 'admin' && currentView === 'branches' && (
+          <div className="fade-in">
+            <div className="main-grid" style={{ gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
+              <div className="card">
+                <h3>Tambah Cabang Baru</h3>
+                <form onSubmit={handleAddBranch} style={{ marginTop: '1.5rem' }}>
+                  <div className="form-group">
+                    <label>Nama Cabang</label>
+                    <input type="text" placeholder="Contoh: Yogyakarta Hub" value={newBranch.name} onChange={e => setNewBranch({ ...newBranch, name: e.target.value })} required />
+                  </div>
+                  <div className="form-group">
+                    <label>Alamat Lengkap</label>
+                    <input type="text" placeholder="Contoh: Jl. Solo KM 10, Sleman" value={newBranch.address} onChange={e => setNewBranch({ ...newBranch, address: e.target.value })} required />
+                  </div>
+                  <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '1rem', padding: '0.8rem' }}>
+                    Simpan Cabang
+                  </button>
+                </form>
+              </div>
+
+              <div className="card">
+                <h3>Daftar Cabang Aktif</h3>
+                <div className="table-responsive" style={{ marginTop: '1.5rem' }}>
+                  <table className="custom-table">
+                    <thead><tr><th>Nama Cabang</th><th>Alamat</th><th style={{ width: '80px' }}>Aksi</th></tr></thead>
+                    <tbody>
+                      {branches.map(b => (
+                        <tr key={b.id}>
+                          <td style={{ fontWeight: 'bold' }}>{b.name}</td>
+                          <td>{b.address}</td>
+                          <td>
+                            <button className="btn-action" style={{ background: '#fee2e2', color: '#ef4444' }} onClick={() => handleDeleteBranch(b.id, b.name)} title="Hapus Cabang">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {branches.length === 0 && (
+                        <tr><td colSpan="3" style={{ textAlign: 'center', color: '#94a3b8' }}>Tidak ada cabang terdaftar</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* KEAMANAN & AUDIT (ADMIN ONLY) */}
+        {user?.role === 'admin' && currentView === 'reports' && (
+          <div className="fade-in">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+              <h2>Security Audit Ledger & Report</h2>
+              <button className="btn-primary" onClick={printFullReport} style={{ background: '#6366f1' }}>
+                🖨️ Cetak Audit Manifest (PDF)
+              </button>
+            </div>
+
+            <div className="main-grid" style={{ gridTemplateColumns: '1.5fr 1fr', gap: '2rem' }}>
+              <div className="card">
+                <h3>Kejadian & Log Aktivitas Enkripsi (Database)</h3>
+                <div className="table-responsive" style={{ marginTop: '1.5rem' }}>
+                  <table className="custom-table" style={{ fontSize: '0.85rem' }}>
+                    <thead><tr><th>Timestamp</th><th>Operator</th><th>Tindakan / Event</th></tr></thead>
+                    <tbody>
+                      {auditLogs.map(log => (
+                        <tr key={log.id}>
+                          <td style={{ color: '#64748b' }}>{new Date(log.timestamp).toLocaleString('id-ID')}</td>
+                          <td style={{ fontWeight: 'bold' }}>{log.username}</td>
+                          <td style={{ color: log.action.includes('audit') || log.action.includes('Decrypted') ? '#4f46e5' : 'inherit', fontWeight: log.action.includes('audit') ? 'bold' : 'normal' }}>
+                            {log.action}
+                          </td>
+                        </tr>
+                      ))}
+                      {auditLogs.length === 0 && (
+                        <tr><td colSpan="3" style={{ textAlign: 'center', color: '#94a3b8' }}>Belum ada logs audit tercatat</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card">
+                <h3>Informasi Integritas Sistem</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1.5rem' }}>
+                  <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 'bold' }}>METODE AUDIT</div>
+                    <div style={{ fontSize: '0.9rem', marginTop: '5px', fontWeight: 600 }}>ChaCha20 Stream Decryption</div>
+                  </div>
+                  <div style={{ padding: '1rem', background: '#f0fdf4', borderRadius: '12px', border: '1px solid #bbf7d0' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#166534', fontWeight: 'bold' }}>INTEGRITAS CHIPERTEXT</div>
+                    <div style={{ fontSize: '0.9rem', marginTop: '5px', fontWeight: 600, color: '#15803d' }}>Semua Record PII Terenkripsi Aman</div>
+                  </div>
+                  <div style={{ padding: '1rem', background: '#fef2f2', borderRadius: '12px', border: '1px solid #fecaca' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#991b1b', fontWeight: 'bold' }}>AKSES SENSITIF</div>
+                    <div style={{ fontSize: '0.9rem', marginTop: '5px', fontWeight: 600, color: '#b91c1c' }}>Hanya untuk Kebutuhan Operasional & Audit Jaringan</div>
                   </div>
                 </div>
               </div>
@@ -611,105 +1191,234 @@ function App() {
           </div>
         )}
 
-        {currentView === 'registration' && (
-          <div className="fade-in card" style={{maxWidth: '1000px', padding: '0', background: '#f8fafc'}}>
-            <div style={{padding: '2rem', background: '#fff', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-              <h2 style={{margin: 0}}>Tambah Paket Baru</h2>
+        {/* -------------------- CUSTOMER VIEWS -------------------- */}
+        {user?.role === 'customer' && currentView === 'customer_dashboard' && (
+          <div className="fade-in">
+            <div className="card" style={{ background: 'linear-gradient(135deg, #4f46e5, #6366f1)', color: '#fff', marginBottom: '2rem', border: 'none' }}>
+              <h2>Halo, {user.username.toUpperCase()}!</h2>
+              <p style={{ marginTop: '0.5rem', opacity: 0.9 }}>Selamat datang di Portal Logistik Ekspresin Aja. Silakan kirim paket baru atau lacak pengiriman Anda secara instan di bawah ini.</p>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '1.5rem' }}>
+                <button className="btn-primary" style={{ background: '#fff', color: '#4f46e5', border: 'none' }} onClick={() => setCurrentView('customer_registration')}>Kirim Paket Baru</button>
+                <button className="btn-primary" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff', borderColor: 'transparent' }} onClick={() => setCurrentView('customer_tracking')}>Lacak Paket Anda</button>
+              </div>
+            </div>
+
+            <div className="stats-grid">
+              <div className="stat-card" style={{ borderLeft: '5px solid var(--primary)' }}>
+                <span className="stat-label">Pengiriman Saya</span>
+                <div className="stat-value">{shipments.length} Paket</div>
+              </div>
+              <div className="stat-card" style={{ borderLeft: '5px solid var(--success)' }}>
+                <span className="stat-label">Buku Alamat</span>
+                <div className="stat-value">{addressBook.length} Alamat</div>
+              </div>
+              <div className="stat-card" style={{ borderLeft: '5px solid #a855f7' }}>
+                <span className="stat-label">Status Keamanan Akun</span>
+                <div className="stat-value" style={{ fontSize: '1.25rem', color: 'var(--success)' }}>Terenkripsi ChaCha20 ✅</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CUSTOMER REGISTRATION FORM */}
+        {user?.role === 'customer' && currentView === 'customer_registration' && (
+          <div className="fade-in card" style={{ maxWidth: '1000px', padding: '0', background: '#f8fafc' }}>
+            <div style={{ padding: '2rem', background: '#fff', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0 }}>Formulir Pengiriman Baru</h2>
               <div className="service-badge ekspres">{formData.service}</div>
             </div>
 
-            <form onSubmit={handleSubmit} style={{padding: '2rem'}}>
+            <form onSubmit={handleSubmit} style={{ padding: '2rem' }}>
+              {/* OPSI PERAN CUSTOMER */}
+              <div className="form-section-card" style={{ marginBottom: '2rem' }}>
+                <div className="section-header">PERAN PENGIRIMAN</div>
+                <div className="form-group">
+                  <label>Pilih Peran Anda dalam Pengiriman ini:</label>
+                  <div style={{ display: 'flex', gap: '30px', marginTop: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
+                      <input type="radio" name="customerRole" checked={customerRole === 'sender'} onChange={() => setCustomerRole('sender')} style={{ width: '18px', height: '18px' }} />
+                      Saya bertindak sebagai PENGIRIM (Sender)
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
+                      <input type="radio" name="customerRole" checked={customerRole === 'receiver'} onChange={() => setCustomerRole('receiver')} style={{ width: '18px', height: '18px' }} />
+                      Saya bertindak sebagai PENERIMA (Receiver)
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* TIPE PENGIRIMAN (PICK UP / DROP OFF) */}
+              <div className="form-section-card" style={{ marginBottom: '2rem' }}>
+                <div className="section-header">LAYANAN EKSPEDISI</div>
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Metode Penyerahan Paket</label>
+                    <div style={{ display: 'flex', gap: '30px', marginTop: '10px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        <input type="radio" name="deliveryType" checked={deliveryType === 'pickup'} onChange={() => setDeliveryType('pickup')} />
+                        Pick Up (Jemput di Alamat Asal)
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        <input type="radio" name="deliveryType" checked={deliveryType === 'dropoff'} onChange={() => setDeliveryType('dropoff')} />
+                        Drop Off (Taruh di Cabang Terdekat)
+                      </label>
+                    </div>
+                  </div>
+                  {deliveryType === 'dropoff' && (
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label>Cabang Penyerahan Paket</label>
+                      <select value={selectedBranchName} onChange={e => setSelectedBranchName(e.target.value)} className="modern-select" required>
+                        <option value="">-- Pilih Cabang Terdekat --</option>
+                        {branches.map(b => (
+                          <option key={b.id} value={b.name}>{b.name} - {b.address}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* SECTION PENGIRIM */}
               <div className="form-section-card">
-                <div className="section-header">PENGIRIM</div>
+                <div className="section-header">PENGIRIM (SENDER)</div>
+                
+                {/* Autocomplete Dropdown if not customer */}
+                {customerRole === 'receiver' && (
+                  <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                    <label>Isi Alamat dari Buku Alamat Anda (Opsional)</label>
+                    <select value={selectedSavedSender} onChange={e => handleSelectSavedAddress('sender', e.target.value)} className="modern-select">
+                      <option value="">-- Pilih Alamat Tersimpan --</option>
+                      {addressBook.map(a => (
+                        <option key={a.id} value={a.id}>{a.name} ({a.street}, {a.city})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="form-row">
-                  <div className="form-group"><label>Nama Pengirim</label><input type="text" value={formData.senderName} onChange={e => setFormData({...formData, senderName: e.target.value})} placeholder="Nama Lengkap" required /></div>
-                  <div className="form-group"><label>No. Telp/HP</label><input type="number" value={formData.senderPhone} onChange={e => setFormData({...formData, senderPhone: e.target.value})} placeholder="08xxxxxxxxxx" required /></div>
+                  <div className="form-group">
+                    <label>Nama Pengirim</label>
+                    <input type="text" value={formData.senderName} onChange={e => setFormData({...formData, senderName: e.target.value})} placeholder="Nama Lengkap" required disabled={customerRole === 'sender'} />
+                  </div>
+                  <div className="form-group">
+                    <label>No. Telp/HP</label>
+                    <input type="number" value={formData.senderPhone} onChange={e => setFormData({...formData, senderPhone: e.target.value})} placeholder="08xxxxxxxxxx" required disabled={customerRole === 'sender'} />
+                  </div>
                 </div>
                 
-                {/* Dropdown Lokasi Bertingkat Pengirim */}
                 <div className="form-row">
                   <div className="form-group"><label>Provinsi Asal</label>
-                    <select value={formData.senderProv} onChange={e => setFormData({...formData, senderProv: e.target.value, senderCity: '', senderKec: ''})} className="modern-select" required>
+                    <select value={formData.senderProv} onChange={e => setFormData({...formData, senderProv: e.target.value, senderCity: '', senderKec: ''})} className="modern-select" required disabled={customerRole === 'sender'}>
                       <option value="">-- Pilih Provinsi --</option>
                       {Object.keys(REGIONS_DATA).map(p => <option key={p} value={p}>{p}</option>)}
                     </select>
                   </div>
                   <div className="form-group"><label>Kota/Kabupaten Asal</label>
-                    <select value={formData.senderCity} onChange={e => setFormData({...formData, senderCity: e.target.value, senderKec: ''})} className="modern-select" disabled={!formData.senderProv} required>
+                    <select value={formData.senderCity} onChange={e => setFormData({...formData, senderCity: e.target.value, senderKec: ''})} className="modern-select" disabled={!formData.senderProv || customerRole === 'sender'} required>
                       <option value="">-- Pilih Kota/Kabupaten --</option>
                       {formData.senderProv && Object.keys(REGIONS_DATA[formData.senderProv]).map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div className="form-group"><label>Kecamatan Asal</label>
-                    <select value={formData.senderKec} onChange={e => setFormData({...formData, senderKec: e.target.value})} className="modern-select" disabled={!formData.senderCity} required>
+                    <select value={formData.senderKec} onChange={e => setFormData({...formData, senderKec: e.target.value})} className="modern-select" disabled={!formData.senderCity || customerRole === 'sender'} required>
                       <option value="">-- Pilih Kecamatan --</option>
                       {formData.senderProv && formData.senderCity && REGIONS_DATA[formData.senderProv][formData.senderCity].map(k => <option key={k} value={k}>{k}</option>)}
                     </select>
                   </div>
                 </div>
 
-                {/* RT RW Dipisah */}
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 2 }}><label>Nama Jalan / No. Rumah</label>
-                    <input type="text" value={formData.senderJalan} onChange={e => setFormData({...formData, senderJalan: e.target.value})} placeholder="Cth: Jl. Mawar No. 12" required />
+                    <input type="text" value={formData.senderJalan} onChange={e => setFormData({...formData, senderJalan: e.target.value})} placeholder="Cth: Jl. Mawar No. 12" required disabled={customerRole === 'sender'} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}><label>RT</label>
-                    <input type="number" value={formData.senderRT} onChange={e => setFormData({...formData, senderRT: e.target.value})} placeholder="Cth: 02" required />
+                    <input type="number" value={formData.senderRT} onChange={e => setFormData({...formData, senderRT: e.target.value})} placeholder="Cth: 02" required disabled={customerRole === 'sender'} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}><label>RW</label>
-                    <input type="number" value={formData.senderRW} onChange={e => setFormData({...formData, senderRW: e.target.value})} placeholder="Cth: 05" required />
+                    <input type="number" value={formData.senderRW} onChange={e => setFormData({...formData, senderRW: e.target.value})} placeholder="Cth: 05" required disabled={customerRole === 'sender'} />
                   </div>
                 </div>
+
+                {customerRole === 'receiver' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '1rem' }}>
+                    <input type="checkbox" id="saveSenderAddress" checked={saveSenderAddress} onChange={e => setSaveSenderAddress(e.target.checked)} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                    <label htmlFor="saveSenderAddress" style={{ margin: 0, cursor: 'pointer', fontWeight: 600, color: '#4f46e5' }}>💾 Simpan alamat pengirim ini ke Buku Alamat</label>
+                  </div>
+                )}
               </div>
 
               {/* SECTION PENERIMA */}
-              <div className="form-section-card" style={{marginTop: '2rem'}}>
-                <div className="section-header" style={{color: '#ef4444'}}>PENERIMA</div>
+              <div className="form-section-card" style={{ marginTop: '2rem' }}>
+                <div className="section-header" style={{ color: '#ef4444' }}>PENERIMA (RECEIVER)</div>
+                
+                {/* Autocomplete Dropdown if not customer */}
+                {customerRole === 'sender' && (
+                  <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                    <label>Isi Alamat dari Buku Alamat Anda (Opsional)</label>
+                    <select value={selectedSavedReceiver} onChange={e => handleSelectSavedAddress('receiver', e.target.value)} className="modern-select">
+                      <option value="">-- Pilih Alamat Tersimpan --</option>
+                      {addressBook.map(a => (
+                        <option key={a.id} value={a.id}>{a.name} ({a.street}, {a.city})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="form-row">
-                  <div className="form-group"><label>Nama Penerima</label><input type="text" value={formData.receiverName} onChange={e => setFormData({...formData, receiverName: e.target.value})} placeholder="Nama Lengkap" required /></div>
-                  <div className="form-group"><label>No. Telp/HP</label><input type="number" value={formData.receiverPhone} onChange={e => setFormData({...formData, receiverPhone: e.target.value})} placeholder="08xxxxxxxxxx" required /></div>
+                  <div className="form-group">
+                    <label>Nama Penerima</label>
+                    <input type="text" value={formData.receiverName} onChange={e => setFormData({...formData, receiverName: e.target.value})} placeholder="Nama Lengkap" required disabled={customerRole === 'receiver'} />
+                  </div>
+                  <div className="form-group">
+                    <label>No. Telp/HP</label>
+                    <input type="number" value={formData.receiverPhone} onChange={e => setFormData({...formData, receiverPhone: e.target.value})} placeholder="08xxxxxxxxxx" required disabled={customerRole === 'receiver'} />
+                  </div>
                 </div>
 
-                {/* Dropdown Lokasi Bertingkat Penerima */}
                 <div className="form-row">
                   <div className="form-group"><label>Provinsi Tujuan</label>
-                    <select value={formData.receiverProv} onChange={e => setFormData({...formData, receiverProv: e.target.value, receiverCity: '', receiverKec: ''})} className="modern-select" required>
+                    <select value={formData.receiverProv} onChange={e => setFormData({...formData, receiverProv: e.target.value, receiverCity: '', receiverKec: ''})} className="modern-select" required disabled={customerRole === 'receiver'}>
                       <option value="">-- Pilih Provinsi --</option>
                       {Object.keys(REGIONS_DATA).map(p => <option key={p} value={p}>{p}</option>)}
                     </select>
                   </div>
                   <div className="form-group"><label>Kota/Kabupaten Tujuan</label>
-                    <select value={formData.receiverCity} onChange={e => setFormData({...formData, receiverCity: e.target.value, receiverKec: ''})} className="modern-select" disabled={!formData.receiverProv} required>
+                    <select value={formData.receiverCity} onChange={e => setFormData({...formData, receiverCity: e.target.value, receiverKec: ''})} className="modern-select" disabled={!formData.receiverProv || customerRole === 'receiver'} required>
                       <option value="">-- Pilih Kota/Kabupaten --</option>
                       {formData.receiverProv && Object.keys(REGIONS_DATA[formData.receiverProv]).map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div className="form-group"><label>Kecamatan Tujuan</label>
-                    <select value={formData.receiverKec} onChange={e => setFormData({...formData, receiverKec: e.target.value})} className="modern-select" disabled={!formData.receiverCity} required>
+                    <select value={formData.receiverKec} onChange={e => setFormData({...formData, receiverKec: e.target.value})} className="modern-select" disabled={!formData.receiverCity || customerRole === 'receiver'} required>
                       <option value="">-- Pilih Kecamatan --</option>
                       {formData.receiverProv && formData.receiverCity && REGIONS_DATA[formData.receiverProv][formData.receiverCity].map(k => <option key={k} value={k}>{k}</option>)}
                     </select>
                   </div>
                 </div>
 
-                {/* RT RW Dipisah */}
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 2 }}><label>Nama Jalan / No. Rumah</label>
-                    <input type="text" value={formData.receiverJalan} onChange={e => setFormData({...formData, receiverJalan: e.target.value})} placeholder="Cth: Jl. Melati No. 45" required />
+                    <input type="text" value={formData.receiverJalan} onChange={e => setFormData({...formData, receiverJalan: e.target.value})} placeholder="Cth: Jl. Melati No. 45" required disabled={customerRole === 'receiver'} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}><label>RT</label>
-                    <input type="number" value={formData.receiverRT} onChange={e => setFormData({...formData, receiverRT: e.target.value})} placeholder="Cth: 01" required />
+                    <input type="number" value={formData.receiverRT} onChange={e => setFormData({...formData, receiverRT: e.target.value})} placeholder="Cth: 01" required disabled={customerRole === 'receiver'} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}><label>RW</label>
-                    <input type="number" value={formData.receiverRW} onChange={e => setFormData({...formData, receiverRW: e.target.value})} placeholder="Cth: 07" required />
+                    <input type="number" value={formData.receiverRW} onChange={e => setFormData({...formData, receiverRW: e.target.value})} placeholder="Cth: 07" required disabled={customerRole === 'receiver'} />
                   </div>
                 </div>
+
+                {customerRole === 'sender' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '1rem' }}>
+                    <input type="checkbox" id="saveReceiverAddress" checked={saveReceiverAddress} onChange={e => setSaveReceiverAddress(e.target.checked)} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                    <label htmlFor="saveReceiverAddress" style={{ margin: 0, cursor: 'pointer', fontWeight: 600, color: '#ef4444' }}>💾 Simpan alamat penerima ini ke Buku Alamat</label>
+                  </div>
+                )}
               </div>
 
-              {/* SECTION INFORMASI BARANG */}
-              <div className="form-section-card" style={{marginTop: '2rem'}}>
-                <div className="section-header" style={{color: 'var(--primary)'}}>INFORMASI BARANG & FISIK PAKET</div>
+              {/* GOODS INFO & DETAILS */}
+              <div className="form-section-card" style={{ marginTop: '2rem' }}>
+                <div className="section-header" style={{ color: 'var(--primary)' }}>INFORMASI BARANG & FISIK PAKET</div>
                 <div className="form-row">
                   <div className="form-group"><label>Nama Barang</label><input type="text" value={formData.itemName} onChange={e => setFormData({...formData, itemName: e.target.value})} placeholder="Cth: Laptop" required /></div>
                   <div className="form-group"><label>Jenis Barang</label>
@@ -719,12 +1428,11 @@ function App() {
                   </div>
                 </div>
 
-                {/* Dimensi & Kuantitas Paket */}
                 <div className="form-row">
                   <div className="form-group"><label>Jumlah Barang (Kuantitas)</label>
                     <input type="number" min="1" value={formData.quantity} onChange={e => setFormData({...formData, quantity: parseInt(e.target.value) || 1})} required />
                   </div>
-                  <div className="form-group"><label>Dimensi Paket (Panjang x Lebar x Tinggi) - cm</label>
+                  <div className="form-group"><label>Dimensi Paket (P x L x T) - cm</label>
                     <div style={{ display: 'flex', gap: '8px' }}>
                       <input type="number" min="0" value={formData.length} onChange={e => setFormData({...formData, length: parseFloat(e.target.value) || ''})} placeholder="P (cm)" required />
                       <input type="number" min="0" value={formData.width} onChange={e => setFormData({...formData, width: parseFloat(e.target.value) || ''})} placeholder="L (cm)" required />
@@ -733,10 +1441,9 @@ function App() {
                   </div>
                 </div>
 
-                {/* Kalkulasi Berat Volume */}
-                {(formData.length && formData.width && formData.height) ? (
+                {formData.length && formData.width && formData.height ? (
                   <div style={{ padding: '0.75rem 1rem', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', color: '#166534', fontSize: '0.8rem', marginBottom: '1.5rem', fontWeight: 600 }}>
-                    ℹ️ Estimasi Berat Volume: {((formData.length * formData.width * formData.height) / 6000).toFixed(2)} Kg (Tarif akan didasarkan pada mana yang lebih berat)
+                    ℹ️ Estimasi Berat Volume: {((formData.length * formData.width * formData.height) / 6000).toFixed(2)} Kg
                   </div>
                 ) : null}
 
@@ -751,7 +1458,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* Asuransi Pengiriman */}
                 <div className="form-row">
                   <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '1rem', paddingBottom: '1rem' }}>
                     <input 
@@ -774,14 +1480,9 @@ function App() {
                       <label>Estimasi Harga Barang (Rp) - <i>Di-enkripsi</i></label>
                       <input type="number" value={formData.itemValue} onChange={e => {
                         const val = parseFloat(e.target.value) || 0;
-                        const ins = val * 0.002; // 0.2%
+                        const ins = val * 0.002;
                         setFormData({...formData, itemValue: val, insuranceValue: ins});
                       }} required={formData.useInsurance} />
-                      {formData.itemValue > 0 && (
-                        <div style={{ fontSize: '0.75rem', color: '#4f46e5', fontWeight: 700, marginTop: '4px' }}>
-                          Terbaca: Rp {formData.itemValue.toLocaleString('id-ID')}
-                        </div>
-                      )}
                     </div>
                     <div className="form-group"><label>Premi Asuransi (0.2%)</label>
                       <input type="text" value={`Rp ${formData.insuranceValue.toLocaleString()}`} readOnly className="cost-input" />
@@ -789,7 +1490,6 @@ function App() {
                   </div>
                 )}
 
-                {/* Metode Pembayaran */}
                 <div className="form-row">
                   <div className="form-group"><label>Metode Pembayaran</label>
                     <select value={formData.paymentMethod} onChange={e => {
@@ -805,16 +1505,10 @@ function App() {
                     <div className="form-group">
                       <label>Nominal Tagihan COD (Rp)</label>
                       <input type="number" value={formData.codAmount} onChange={e => setFormData({...formData, codAmount: parseFloat(e.target.value) || 0})} required />
-                      {formData.codAmount > 0 && (
-                        <div style={{ fontSize: '0.75rem', color: '#ef4444', fontWeight: 700, marginTop: '4px' }}>
-                          Terbaca: Rp {formData.codAmount.toLocaleString('id-ID')}
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
 
-                {/* Dropdown Instruksi & Catatan Kurir */}
                 <div className="form-row" style={{ marginTop: '1rem' }}>
                   <div className="form-group"><label>Instruksi Penanganan Paket</label>
                     <select value={formData.itemNotes} onChange={e => setFormData({...formData, itemNotes: e.target.value})} className="modern-select">
@@ -829,128 +1523,85 @@ function App() {
                   </div>
                 </div>
 
-                {/* Deskripsi Barang Terenkripsi */}
                 <div className="form-group" style={{ marginTop: '1rem' }}><label>Deskripsi Detail Barang (Isi Paket) - <i>Di-enkripsi</i></label>
                   <textarea rows="2" value={formData.itemDesc} onChange={e => setFormData({...formData, itemDesc: e.target.value})} placeholder="Cth: Baju batik sutra warna merah ukuran XL" required></textarea>
                 </div>
               </div>
 
-              <div style={{marginTop: '2.5rem', display: 'flex', gap: '1rem'}}>
-                <button type="submit" className="btn-primary" disabled={loading} style={{flex: 2, padding: '1.2rem'}}>
+              <div style={{ marginTop: '2.5rem', display: 'flex', gap: '1rem' }}>
+                <button type="submit" className="btn-primary" disabled={loading} style={{ flex: 2, padding: '1.2rem' }}>
                   {loading ? '🔐 MENGAMANKAN DATA...' : 'KONFIRMASI & KIRIM PAKET'}
                 </button>
-                <div style={{flex: 1, background: '#fff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '1rem', textAlign: 'center'}}>
-                  <div style={{fontSize: '0.7rem', color: '#64748b'}}>TOTAL Ongkir & Asuransi</div>
-                  <div style={{fontSize: '1.2rem', fontWeight: '900', color: 'var(--primary)'}}>
-                    Rp {( (formData.weight * 10000 * (formData.service === 'Ekspres' ? 1.5 : formData.service === 'Same Day' ? 2 : 1)) + 5000 + formData.insuranceValue ).toLocaleString()}
+                <div style={{ flex: 1, background: '#fff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '1rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.7rem', color: '#64748b' }}>TOTAL Ongkir & Asuransi</div>
+                  <div style={{ fontSize: '1.2rem', fontWeight: '900', color: 'var(--primary)' }}>
+                    Rp {((formData.weight * 10000 * (formData.service === 'Ekspres' ? 1.5 : formData.service === 'Same Day' ? 2 : 1)) + 5000 + formData.insuranceValue).toLocaleString()}
                   </div>
                 </div>
               </div>
             </form>
-            
-            <style>{`
-              .form-section-card { background: #fff; padding: 1.5rem; border-radius: 16px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-              .section-header { font-size: 0.75rem; font-weight: 900; letter-spacing: 1px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px; }
-              .section-header::after { content: ''; flex: 1; height: 1px; background: #f1f5f9; }
-            `}</style>
           </div>
         )}
 
-        {currentView === 'manifest' && (
+        {/* CUSTOMER TRACKING VIEW (AUTO-DECRYPTED) */}
+        {user?.role === 'customer' && currentView === 'customer_tracking' && (
           <div className="fade-in">
-            <div className="search-bar-container"><input type="text" placeholder="Cari Resi atau Penerima..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" /></div>
+            <div className="search-bar-container"><input type="text" placeholder="Cari berdasarkan No. Resi..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" /></div>
+            
             <div className="card table-card">
               <div className="table-responsive">
                 <table className="custom-table">
-                  <thead><tr><th>No. Resi</th><th>Kecamatan Tujuan</th><th>Penerima</th><th>Layanan</th><th>Status</th><th>Pembayaran</th><th>Data Terenkripsi</th><th>Aksi</th></tr></thead>
+                  <thead><tr><th>No. Resi</th><th>Layanan</th><th>Pengirim</th><th>Penerima</th><th>Tujuan</th><th>Fisik / Barang</th><th>Status</th><th>Metode</th><th>Label</th></tr></thead>
                   <tbody>
                     {filteredShipments.map(item => {
                       const { service } = parseItemData(item);
+                      
+                      const senderDec = decryptedData[`sender_${item.id}`] || 'Decryption...';
+                      const receiverDec = decryptedData[`receiver_${item.id}`] || 'Decryption...';
+                      const itemNameDec = decryptedData[`item_name_${item.id}`] || 'Decryption...';
+                      const receiverAddrDec = decryptedData[`receiver_addr_${item.id}`] || '';
+
                       return (
                         <tr key={item.id}>
                           <td className="tracking-id">{item.tracking_number}</td>
-                          <td style={{fontWeight: 700}}>{item.receiver_kec || '-'}</td>
-                          <td style={{fontWeight: 700}}>{decryptedData[`receiver_${item.id}`] || '••••••••'}</td>
-                          <td><span className={`service-badge ${service === 'Ekspres' ? 'ekspres' : ''}`}>{service}</span></td>
                           <td>
-                             <span 
-                               className={`status-badge status-${item.status.toLowerCase().replace(/ /g, '')}`} 
-                               onClick={() => handleCycleStatus(item)}
-                               style={{cursor:'pointer'}}
-                             >
-                               {item.status}
-                             </span>
+                            <span className={`service-badge ${service === 'Ekspres' ? 'ekspres' : ''}`}>{service}</span>
+                            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '4px' }}>
+                              {item.delivery_type === 'dropoff' ? 'Drop Off (' + (item.branch_name || 'Hub') + ')' : 'Pick Up Service'}
+                            </div>
+                          </td>
+                          <td style={{ fontWeight: 700 }}>{senderDec}</td>
+                          <td style={{ fontWeight: 700 }}>{receiverDec}</td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{item.receiver_kec}</div>
+                            <div style={{ fontSize: '0.75rem', color: '#64748b' }}>{receiverAddrDec}</div>
                           </td>
                           <td>
-                            <div style={{ fontWeight: 700 }}>Rp {parseItemData(item).shippingCost.toLocaleString()}</div>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>
-                              {item.payment_method || 'Cash'}
-                              {item.payment_method === 'COD' && (
-                                <span style={{ color: '#ef4444', fontWeight: 700 }}>
-                                  {decryptedData[`cod_amount_${item.id}`]
-                                    ? ` (COD: Rp ${parseInt(decryptedData[`cod_amount_${item.id}`]).toLocaleString()})`
-                                    : ' (COD: 🔒)'}
-                                </span>
-                              )}
-                            </div>
-                            {item.use_insurance === 1 && (
-                              <div style={{ fontSize: '0.72rem', color: '#6366f1', marginTop: '2px' }}>
-                                + Asuransi: {decryptedData[`insurance_fee_${item.id}`]
-                                  ? `Rp ${parseInt(decryptedData[`insurance_fee_${item.id}`]).toLocaleString()}`
-                                  : '🔒 Encrypted'}
-                              </div>
+                            <div style={{ fontWeight: 600 }}>{itemNameDec}</div>
+                            <div style={{ fontSize: '0.75rem', color: '#64748b' }}>{item.weight} Kg // {item.quantity} Pcs</div>
+                          </td>
+                          <td>
+                            <span className={`status-badge status-${item.status.toLowerCase().replace(/ /g, '')}`}>
+                              {item.status}
+                            </span>
+                          </td>
+                          <td style={{ fontWeight: 600 }}>
+                            {item.payment_method}
+                            {item.payment_method === 'COD' && decryptedData[`cod_amount_${item.id}`] && (
+                              <div style={{ fontSize: '0.7rem', color: '#ef4444' }}>Rp {parseInt(decryptedData[`cod_amount_${item.id}`]).toLocaleString()}</div>
                             )}
                           </td>
                           <td>
-                            <div style={{display:'flex', gap:'5px', flexWrap: 'wrap'}}>
-                              <div className="cipher-box" title="Decrypted Receiver" style={{ background: decryptedData[`receiver_${item.id}`] ? '#ecfdf5' : '', color: decryptedData[`receiver_${item.id}`] ? '#059669' : '' }}>
-                                {decryptedData[`receiver_${item.id}`] || (item.receiver_name_enc || '••••').substring(0, 8) + '...'}
-                              </div>
-                              <div className="cipher-box" title="Decrypted Address" style={{ background: decryptedData[`receiver_addr_${item.id}`] ? '#ecfdf5' : '', color: decryptedData[`receiver_addr_${item.id}`] ? '#059669' : '' }}>
-                                {decryptedData[`receiver_addr_${item.id}`] || (item.receiver_addr_enc || '••••').substring(0, 8) + '...'}
-                              </div>
-                              <div className="cipher-box" title="Notes (Public)" style={{ background: '#fff7ed', color: '#c2410c', borderColor: '#ffedd5' }}>
-                                📝 {item.item_notes || 'No Notes'}
-                              </div>
-                              <div className="cipher-box" title="Insurance/Price" style={{ background: decryptedData[`item_value_${item.id}`] ? '#eff6ff' : '', color: decryptedData[`item_value_${item.id}`] ? '#2563eb' : '' }}>
-                                💰 {decryptedData[`item_value_${item.id}`] ? `Rp ${parseInt(decryptedData[`item_value_${item.id}`]).toLocaleString()}` : (item.item_value_enc || '••••').substring(0, 6) + '...'}
-                              </div>
-                            </div>
-                          </td>
-                          <td>
-                            <div className="action-btns">
-                              {!decryptedData[`receiver_addr_${item.id}`] ? (
-                                <button className="btn-action decrypt" onClick={() => handleDecrypt(item.id, {
-                                  sender: item.sender_name_enc,
-                                  sender_phone: item.sender_phone_enc,
-                                  sender_kec: item.sender_kec_enc,
-                                  sender_addr: item.sender_addr_enc,
-                                  receiver: item.receiver_name_enc,
-                                  receiver_addr: item.receiver_addr_enc,
-                                  receiver_phone: item.receiver_phone_enc,
-                                  item_name: item.item_name_enc,
-                                  item_cat: item.item_category_enc,
-                                  item_desc: item.item_desc_enc,
-                                  insurance: item.insurance_enc,
-                                  item_value: item.item_value_enc,
-                                  insurance_fee: item.insurance_fee_enc,
-                                  cod_amount: item.cod_amount_enc
-                                }, item.nonce)} title="Dekripsi Data">
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path><path d="M12 11v-4"></path></svg>
-                                </button>
-                              ) : (
-                                <button className="btn-action lock" onClick={() => handleLock(item.id)} title="Kunci Kembali">
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                                </button>
-                              )}
-                              <button className="btn-action print" onClick={() => printReceipt(item)} title="Cetak Resi">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
-                              </button>
-                            </div>
+                            <button className="btn-action print" onClick={() => printReceipt(item)} title="Cetak Label Resi">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                            </button>
                           </td>
                         </tr>
                       );
                     })}
+                    {filteredShipments.length === 0 && (
+                      <tr><td colSpan="9" style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>Belum ada riwayat pengiriman paket.</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -958,124 +1609,61 @@ function App() {
           </div>
         )}
 
-        {currentView === 'reports' && (
+        {/* CUSTOMER ADDRESS BOOK VIEW */}
+        {user?.role === 'customer' && currentView === 'customer_address' && (
           <div className="fade-in">
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'2rem', gap: '10px'}}>
-              <h2>Laporan Audit & Statistik</h2>
-              <div style={{display:'flex', gap:'10px'}}>
-                <button className="btn-primary" onClick={printFullReport} style={{background:'#6366f1'}}>Cetak Laporan (PDF)</button>
-                <button className="btn-primary" onClick={handleDecryptAll} style={{background:'#059669'}}>Mulai Audit Dekripsi (Full Access)</button>
-                <button className="btn-primary" onClick={() => { setDecryptedData({}); addLog('Laporan audit berhasil dikunci kembali.', 'info'); }} style={{background:'#dc2626'}}>Kunci Kembali Laporan</button>
+            <div className="main-grid" style={{ gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
+              <div className="card">
+                <h3>Tambah Alamat Baru</h3>
+                <form onSubmit={handleAddAddress} style={{ marginTop: '1.5rem' }}>
+                  <div className="form-group"><label>Nama Penerima/Kontak</label><input type="text" placeholder="Masukkan nama" value={newAddress.name} onChange={e => setNewAddress({...newAddress, name: e.target.value})} required /></div>
+                  <div className="form-group"><label>No. Telp</label><input type="number" placeholder="08xxxxxxxxxx" value={newAddress.phone} onChange={e => setNewAddress({...newAddress, phone: e.target.value})} required /></div>
+                  <div className="form-group"><label>Provinsi</label>
+                    <select value={newAddress.province} onChange={e => setNewAddress({...newAddress, province: e.target.value, city: '', district: ''})} className="modern-select" required>
+                      <option value="">-- Pilih Provinsi --</option>
+                      {Object.keys(REGIONS_DATA).map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group"><label>Kota/Kabupaten</label>
+                    <select value={newAddress.city} onChange={e => setNewAddress({...newAddress, city: e.target.value, district: ''})} className="modern-select" disabled={!newAddress.province} required>
+                      <option value="">-- Pilih Kota --</option>
+                      {newAddress.province && Object.keys(REGIONS_DATA[newAddress.province]).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group"><label>Kecamatan</label>
+                    <select value={newAddress.district} onChange={e => setNewAddress({...newAddress, district: e.target.value})} className="modern-select" disabled={!newAddress.city} required>
+                      <option value="">-- Pilih Kecamatan --</option>
+                      {newAddress.province && newAddress.city && REGIONS_DATA[newAddress.province][newAddress.city].map(k => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group"><label>Jalan & No. Rumah</label><input type="text" placeholder="Jl. Raya No. 4" value={newAddress.street} onChange={e => setNewAddress({...newAddress, street: e.target.value})} /></div>
+                  <div className="form-row">
+                    <div className="form-group"><label>RT</label><input type="number" placeholder="01" value={newAddress.rt} onChange={e => setNewAddress({...newAddress, rt: e.target.value})} /></div>
+                    <div className="form-group"><label>RW</label><input type="number" placeholder="02" value={newAddress.rw} onChange={e => setNewAddress({...newAddress, rw: e.target.value})} /></div>
+                  </div>
+                  <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '1rem', padding: '0.8rem' }}>Simpan Alamat</button>
+                </form>
               </div>
-            </div>
-            
-            <div className="card" style={{marginBottom:'2rem'}}>
-              <h3>Tabel Audit Terperinci</h3>
-              <div className="table-responsive" style={{marginTop:'1.5rem'}}>
-                <table className="custom-table" style={{fontSize:'0.8rem'}}>
-                  <thead>
-                    <tr>
-                      <th>Resi / Status</th>
-                      <th>Pengirim (Audit)</th>
-                      <th>Penerima (Audit)</th>
-                      <th>Detail Barang & Fisik</th>
-                      <th>Deskripsi & Catatan</th>
-                      <th>Biaya & Pembayaran</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shipments.map(s => {
-                      const { shippingCost } = parseItemData(s);
-                      const decInsuranceFee = decryptedData[`insurance_fee_${s.id}`] ? parseInt(decryptedData[`insurance_fee_${s.id}`]) : null;
-                      const totalCost = decInsuranceFee !== null ? shippingCost + decInsuranceFee : null;
-                      return (
-                        <tr key={s.id}>
-                          <td style={{ verticalAlign: 'top' }}>
-                            <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{s.tracking_number}</div>
-                            <div style={{ marginTop: '5px' }}>
-                              <span className={`status-badge status-${s.status.toLowerCase().replace(/ /g, '')}`}>
-                                {s.status}
-                              </span>
-                            </div>
-                          </td>
-                          <td style={{ verticalAlign: 'top', lineHeight: '1.4' }}>
-                            <strong>Nama:</strong> {decryptedData[`sender_${s.id}`] || <span className="locked-data">LOCKED</span>}<br/>
-                            <strong>Telp:</strong> {decryptedData[`sender_phone_${s.id}`] || <span className="locked-data">LOCKED</span>}<br/>
-                            <strong>Alamat:</strong> {decryptedData[`sender_addr_${s.id}`] && decryptedData[`sender_kec_${s.id}`] ? `${decryptedData[`sender_addr_${s.id}`]}, ${decryptedData[`sender_kec_${s.id}`]}` : <span className="locked-data">LOCKED</span>}
-                          </td>
-                          <td style={{ verticalAlign: 'top', lineHeight: '1.4' }}>
-                            <strong>Nama:</strong> {decryptedData[`receiver_${s.id}`] || <span className="locked-data">LOCKED</span>}<br/>
-                            <strong>Telp:</strong> {decryptedData[`receiver_phone_${s.id}`] || <span className="locked-data">LOCKED</span>}<br/>
-                            <strong>Alamat:</strong> {decryptedData[`receiver_addr_${s.id}`] ? `${decryptedData[`receiver_addr_${s.id}`]}, ${s.receiver_kec}` : <span className="locked-data">LOCKED</span>}
-                          </td>
-                          <td style={{ verticalAlign: 'top', lineHeight: '1.4' }}>
-                            <strong>Barang:</strong> {decryptedData[`item_name_${s.id}`] || <span className="locked-data">LOCKED</span>} ({decryptedData[`item_cat_${s.id}`] || <span className="locked-data">LOCKED</span>})<br/>
-                            <strong>Jumlah:</strong> {s.quantity || 1} pcs<br/>
-                            <strong>Dimensi:</strong> {s.length && s.width && s.height ? `${s.length}x${s.width}x${s.height} cm` : '-'}<br/>
-                            <strong>Berat:</strong> {s.weight || 1} Kg (Vol: {s.length && s.width && s.height ? `${((s.length * s.width * s.height) / 6000).toFixed(2)} Kg` : '-'})
-                          </td>
-                          <td style={{ verticalAlign: 'top', lineHeight: '1.4' }}>
-                            <strong>Deskripsi:</strong> {decryptedData[`item_desc_${s.id}`] || <span className="locked-data">LOCKED</span>}<br/>
-                            <strong>Instruksi:</strong> <span style={{ color: '#c2410c', fontWeight: 600 }}>{s.item_notes || '-'}</span><br/>
-                            <strong>Catatan Kurir:</strong> {s.courier_notes || <span style={{ color: 'var(--text-dim)' }}>-</span>}
-                          </td>
-                          <td style={{ verticalAlign: 'top', lineHeight: '1.4' }}>
-                            <strong>Metode:</strong> {s.payment_method || 'Cash'}<br/>
-                            {s.payment_method === 'COD' && (
-                              <><strong>Nominal COD:</strong> {decryptedData[`cod_amount_${s.id}`] ? formatRupiah(decryptedData[`cod_amount_${s.id}`]) : <span className="locked-data">LOCKED</span>}<br/></>
-                            )}
-                            <strong>Ongkir:</strong> Rp {shippingCost.toLocaleString()}<br/>
-                            {s.use_insurance === 1 && (
-                              <><strong>Nilai Barang:</strong> {decryptedData[`item_value_${s.id}`] ? formatRupiah(decryptedData[`item_value_${s.id}`]) : <span className="locked-data">LOCKED</span>}<br/>
-                              <strong>Premi Asuransi:</strong> {decryptedData[`insurance_fee_${s.id}`] ? formatRupiah(decryptedData[`insurance_fee_${s.id}`]) : <span className="locked-data">LOCKED</span>}<br/></>
-                            )}
-                            <strong>Total:</strong> <strong style={{ color: 'var(--primary)' }}>
-                              {totalCost !== null ? `Rp ${totalCost.toLocaleString()}` : <span className="locked-data">LOCKED</span>}
-                            </strong>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            <div className="main-grid" style={{gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem'}}>
               <div className="card">
-                <h3>Revenue Analysis</h3>
-                <div className="table-responsive" style={{marginTop:'1.5rem'}}>
+                <h3>Buku Alamat Saya</h3>
+                <div className="table-responsive" style={{ marginTop: '1.5rem' }}>
                   <table className="custom-table">
-                    <thead><tr><th>Layanan</th><th>Vol</th><th style={{textAlign:'right'}}>Revenue</th></tr></thead>
+                    <thead><tr><th>Nama</th><th>Telepon</th><th>Alamat Lengkap</th></tr></thead>
                     <tbody>
-                      {['Reguler', 'Ekspres', 'Same Day'].map(svc => {
-                        const filtered = shipments.filter(s => s.service_type === svc);
-                        const totalRev = filtered.length * (15000 + (svc === 'Ekspres' ? 10000 : 0));
-                        return (
-                          <tr key={svc}>
-                            <td><span className={`service-badge ${svc !== 'Reguler' ? 'ekspres' : ''}`}>{svc}</span></td>
-                            <td>{filtered.length}</td>
-                            <td style={{textAlign:'right', fontWeight: '900', color: 'var(--primary)'}}>Rp {totalRev.toLocaleString()}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              
-              <div className="card">
-                <h3>Security Audit Log</h3>
-                <div className="table-responsive" style={{marginTop:'1.5rem'}}>
-                  <table className="custom-table" style={{fontSize:'0.85rem'}}>
-                    <thead><tr><th>Waktu</th><th>Event</th></tr></thead>
-                    <tbody>
-                      {securityLogs.map(log => (
-                        <tr key={log.id}>
-                          <td>{log.time}</td>
-                          <td style={{color: log.type === 'warning' ? 'red' : 'inherit'}}>{log.msg}</td>
+                      {addressBook.map(a => (
+                        <tr key={a.id}>
+                          <td style={{ fontWeight: 'bold' }}>{a.name}</td>
+                          <td>{a.phone}</td>
+                          <td>
+                            <div>{a.street}, RT {a.rt}/RW {a.rw}</div>
+                            <div style={{ fontSize: '0.75rem', color: '#64748b' }}>{a.district}, {a.city}, {a.province}</div>
+                          </td>
                         </tr>
                       ))}
+                      {addressBook.length === 0 && (
+                        <tr><td colSpan="3" style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>Belum ada alamat tersimpan</td></tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1083,90 +1671,65 @@ function App() {
             </div>
           </div>
         )}
-        
-      {checkoutData && (
-        <div className="checkout-modal-backdrop">
-          <div className="checkout-modal-card">
-            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-              <div style={{ display: 'inline-flex', background: '#ecfdf5', color: '#10b981', padding: '12px', borderRadius: '50%', marginBottom: '1rem' }}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              </div>
-              <h3 className="invoice-title">Invoice Pembayaran</h3>
-              <p style={{ color: '#64748b', fontSize: '0.85rem', margin: '5px 0' }}>Resi: <strong>{checkoutData.trackingNumber}</strong></p>
-            </div>
-            
-            <div style={{ marginBottom: '2rem' }}>
-              <div className="invoice-row">
-                <span style={{ color: '#64748b' }}>Layanan</span>
-                <span style={{ fontWeight: 700 }}>{checkoutData.service}</span>
-              </div>
-              <div className="invoice-row">
-                <span style={{ color: '#64748b' }}>Berat Paket</span>
-                <span style={{ fontWeight: 700 }}>{checkoutData.weight} Kg</span>
-              </div>
-              <div className="invoice-row">
-                <span style={{ color: '#64748b' }}>Metode Pembayaran</span>
-                <span style={{ fontWeight: 700, color: checkoutData.paymentMethod === 'COD' ? '#ef4444' : '#0f172a' }}>
-                  {checkoutData.paymentMethod}
-                </span>
-              </div>
-              {checkoutData.paymentMethod === 'COD' && (
-                <div className="invoice-row">
-                  <span style={{ color: '#64748b' }}>Tagihan COD</span>
-                  <span style={{ fontWeight: 700, color: '#ef4444' }}>Rp {checkoutData.codAmount.toLocaleString()}</span>
+
+        {/* -------------------- INVOICE MODAL -------------------- */}
+        {checkoutData && (
+          <div className="checkout-modal-backdrop">
+            <div className="checkout-modal-card">
+              <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'inline-flex', background: '#ecfdf5', color: '#10b981', padding: '12px', borderRadius: '50%', marginBottom: '1rem' }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 </div>
-              )}
-              <div className="invoice-row">
-                <span style={{ color: '#64748b' }}>Ongkos Kirim</span>
-                <span style={{ fontWeight: 700 }}>Rp {checkoutData.shippingCost.toLocaleString()}</span>
+                <h3 className="invoice-title">Invoice Pengiriman Paket</h3>
+                <p style={{ color: '#64748b', fontSize: '0.85rem', margin: '5px 0' }}>Nomor Resi: <strong>{checkoutData.trackingNumber}</strong></p>
               </div>
-              {checkoutData.insuranceValue > 0 && (
-                <>
-                  <div className="invoice-row">
-                    <span style={{ color: '#64748b' }}>Nilai Barang</span>
-                    <span style={{ fontWeight: 700 }}>Rp {checkoutData.insuranceValue.toLocaleString()}</span>
-                  </div>
-                  <div className="invoice-row">
-                    <span style={{ color: '#64748b' }}>Premi Asuransi (0.2%)</span>
-                    <span style={{ fontWeight: 700 }}>Rp {checkoutData.insuranceFee.toLocaleString()}</span>
-                  </div>
-                </>
-              )}
-              <div className="invoice-row total">
-                <span>Total Biaya</span>
-                <span>Rp {checkoutData.totalCost.toLocaleString()}</span>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <div className="invoice-row"><span style={{ color: '#64748b' }}>Layanan</span><span style={{ fontWeight: 700 }}>{checkoutData.service}</span></div>
+                <div className="invoice-row"><span style={{ color: '#64748b' }}>Berat Paket</span><span style={{ fontWeight: 700 }}>{checkoutData.weight} Kg</span></div>
+                <div className="invoice-row"><span style={{ color: '#64748b' }}>Metode Pembayaran</span><span style={{ fontWeight: 700, color: checkoutData.paymentMethod === 'COD' ? '#ef4444' : '#0f172a' }}>{checkoutData.paymentMethod}</span></div>
+                {checkoutData.paymentMethod === 'COD' && (
+                  <div className="invoice-row"><span style={{ color: '#64748b' }}>Tagihan COD</span><span style={{ fontWeight: 700, color: '#ef4444' }}>Rp {checkoutData.codAmount.toLocaleString()}</span></div>
+                )}
+                <div className="invoice-row"><span style={{ color: '#64748b' }}>Biaya Ongkos Kirim</span><span style={{ fontWeight: 700 }}>Rp {checkoutData.shippingCost.toLocaleString()}</span></div>
+                {checkoutData.insuranceValue > 0 && (
+                  <>
+                    <div className="invoice-row"><span style={{ color: '#64748b' }}>Nilai Barang</span><span style={{ fontWeight: 700 }}>Rp {checkoutData.insuranceValue.toLocaleString()}</span></div>
+                    <div className="invoice-row"><span style={{ color: '#64748b' }}>Premi Asuransi</span><span style={{ fontWeight: 700 }}>Rp {checkoutData.insuranceFee.toLocaleString()}</span></div>
+                  </>
+                )}
+                <div className="invoice-row total"><span>Total Biaya</span><span>Rp {checkoutData.totalCost.toLocaleString()}</span></div>
               </div>
-            </div>
-            
-            <div style={{ display: 'flex', gap: '1rem' }}>
-              <button 
-                onClick={async () => {
-                  await updateStatus(checkoutData.id, 'Ready to Ship');
-                  setCheckoutData(null);
-                  setCurrentView('dashboard');
-                }}
-                className="btn-primary" 
-                style={{ flex: 1, padding: '1rem', background: '#10b981', borderColor: '#10b981', color: '#fff', cursor: 'pointer' }}
-              >
-                Bayar Sekarang
-              </button>
-              <button 
-                onClick={() => {
-                  setCheckoutData(null);
-                  setCurrentView('dashboard');
-                }}
-                className="btn-primary" 
-                style={{ flex: 1, padding: '1rem', background: '#64748b', borderColor: '#64748b', color: '#fff', cursor: 'pointer' }}
-              >
-                Bayar Nanti (Pending)
-              </button>
+              
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button 
+                  onClick={async () => {
+                    await updateStatus(checkoutData.id, 'Ready to Ship');
+                    setCheckoutData(null);
+                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_dashboard');
+                  }}
+                  className="btn-primary" 
+                  style={{ flex: 1, padding: '1rem', background: '#10b981', borderColor: '#10b981', color: '#fff', cursor: 'pointer' }}
+                >
+                  Bayar Sekarang (Lunas)
+                </button>
+                <button 
+                  onClick={() => {
+                    setCheckoutData(null);
+                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_dashboard');
+                  }}
+                  className="btn-primary" 
+                  style={{ flex: 1, padding: '1rem', background: '#64748b', borderColor: '#64748b', color: '#fff', cursor: 'pointer' }}
+                >
+                  Bayar Nanti
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-      
+        )}
+
         <footer style={{marginTop:'3rem', textAlign:'center', fontSize:'0.7rem', color:'var(--text-dim)', paddingBottom:'2rem'}}>
-          &copy; 2026 Ekspresin Aja - Logistik Aman & Terpercaya.
+          &copy; 2026 Ekspresin Aja - Logistik Terenkripsi Jaringan & PII Aman.
         </footer>
       </main>
       
@@ -1219,6 +1782,13 @@ function App() {
         .invoice-row { display: flex; justify-content: space-between; padding: 0.75rem 0; border-bottom: 1px dashed #e2e8f0; font-size: 0.9rem; }
         .invoice-row.total { border-bottom: none; font-size: 1.25rem; font-weight: 900; color: var(--primary); padding-top: 1.5rem; }
         
+        .auth-tab { transition: 0.3s; }
+        .auth-tab.active { background: #fff; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08); color: var(--primary); }
+        .auth-tab:not(.active) { background: transparent; color: #64748b; }
+        .auth-tab:not(.active):hover { color: var(--primary); }
+
+        .locked-data { background: #fef2f2; color: #b91c1c; font-family: monospace; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; border: 1px solid #fecaca; }
+
         @media (max-width: 992px) {
           .login-screen > div { 
             grid-template-columns: 1fr !important; 
