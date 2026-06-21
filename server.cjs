@@ -66,6 +66,7 @@ db.serialize(() => {
 
     db.run(`CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_number TEXT UNIQUE,
         tracking_number TEXT UNIQUE,
         sender_name_enc TEXT,
         sender_phone_enc TEXT,
@@ -87,7 +88,7 @@ db.serialize(() => {
         nonce TEXT,
         service_type TEXT,
         weight REAL,
-        status TEXT DEFAULT 'Pending',
+        status TEXT DEFAULT 'ORDER_CREATED',
         payment_method TEXT DEFAULT 'Cash',
         use_insurance INTEGER DEFAULT 0,
         quantity INTEGER DEFAULT 1,
@@ -173,9 +174,9 @@ app.get('/', (req, res) => {
 // PUBLIC TRACKING API
 app.get('/api/track/:number', (req, res) => {
     const { number } = req.params;
-    db.get("SELECT * FROM shipments WHERE tracking_number = ?", [number], (err, row) => {
+    db.get("SELECT * FROM shipments WHERE tracking_number = ? OR booking_number = ?", [number, number], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(404).json({ message: 'Resi tidak ditemukan' });
+        if (!row) return res.status(404).json({ message: 'Resi/Booking tidak ditemukan' });
         res.json(row);
     });
 });
@@ -250,6 +251,27 @@ app.post('/api/address-book', (req, res) => {
     );
 });
 
+app.put('/api/address-book/:id', (req, res) => {
+    const addressId = parseInt(req.params.id);
+    const { name, phone, province, city, district, street, rt, rw } = req.body;
+    db.run(
+        "UPDATE address_book SET name = ?, phone = ?, province = ?, city = ?, district = ?, street = ?, rt = ?, rw = ? WHERE id = ?",
+        [name, phone, province, city, district, street, rt, rw, addressId],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: 'Success' });
+        }
+    );
+});
+
+app.delete('/api/address-book/:id', (req, res) => {
+    const addressId = parseInt(req.params.id);
+    db.run("DELETE FROM address_book WHERE id = ?", [addressId], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Success' });
+    });
+});
+
 // AUDIT LOG ENDPOINTS
 app.get('/api/audit-logs', (req, res) => {
     db.all("SELECT * FROM audit_logs ORDER BY timestamp DESC", [], (err, rows) => {
@@ -295,7 +317,7 @@ app.post('/api/shipments', (req, res) => {
         customerId, roleType, deliveryType, branchName
     } = req.body;
     
-    const tracking_number = 'EJA-' + Math.random().toString(36).substr(2, 7).toUpperCase();
+    const booking_number = 'BOOK-' + Math.random().toString(36).substr(2, 7).toUpperCase();
     const nonce = Buffer.alloc(12);
     for (let i = 0; i < 12; i++) nonce[i] = Math.floor(Math.random() * 256);
     
@@ -308,28 +330,28 @@ app.post('/api/shipments', (req, res) => {
     console.log(`POST /api/shipments - Saving new shipment...`);
 
     db.run(`INSERT INTO shipments (
-        tracking_number, 
+        booking_number, tracking_number,
         sender_name_enc, sender_phone_enc, sender_kec_enc, sender_addr_enc,
         receiver_name_enc, receiver_phone_enc, receiver_kec, receiver_addr_enc,
         item_name_enc, item_category_enc, item_desc_enc, item_notes, courier_notes, 
         insurance_enc, item_value_enc, insurance_fee_enc, cod_amount_enc,
         nonce, service_type, weight, status, payment_method, use_insurance,
         quantity, length, width, height, customer_id, role_type, delivery_type, branch_name
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
-            tracking_number, 
+            booking_number, null, 
             enc(senderName), enc(senderPhone), enc(senderKec), enc(senderAddr),
             enc(receiverName), enc(receiverPhone), receiverKec, enc(receiverAddr),
             enc(itemName), enc(itemCategory), enc(itemDesc), itemNotes, courierNotes,
             enc(itemValue), enc(itemValue), enc(calcInsuranceFee), enc(codAmount),
-            nonceB64, service, weight, 'Pending',
+            nonceB64, service, weight, 'ORDER_CREATED',
             paymentMethod || 'Cash', useInsurance ? 1 : 0,
             quantity || 1, length || 0, width || 0, height || 0,
             customerId || null, roleType || 'sender', deliveryType || 'pickup', branchName || null
         ],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID, tracking_number });
+            res.json({ id: this.lastID, booking_number });
         }
     );
 });
@@ -341,6 +363,26 @@ app.put('/api/shipments/:id/status', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Success' });
     });
+});
+
+app.put('/api/shipments/:id/verify', (req, res) => {
+    const shipmentId = parseInt(req.params.id);
+    const { weight } = req.body;
+    
+    if (weight === undefined || isNaN(parseFloat(weight)) || parseFloat(weight) <= 0) {
+        return res.status(400).json({ error: 'Berat aktual tidak valid!' });
+    }
+    
+    const tracking_number = 'JP' + Math.floor(1000000000 + Math.random() * 9000000000);
+    
+    db.run(
+        `UPDATE shipments SET status = 'READY_TO_SHIP', weight = ?, tracking_number = ? WHERE id = ?`,
+        [parseFloat(weight), tracking_number, shipmentId],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: 'Success', tracking_number });
+        }
+    );
 });
 
 app.post('/api/decrypt', (req, res) => {
