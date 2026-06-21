@@ -1170,7 +1170,7 @@ function App() {
                   </thead>
                   <tbody>
                     {shipments
-                      .filter(item => item.status === 'ORDER_CREATED' || item.status === 'WAITING_FOR_VERIFICATION')
+                      .filter(item => item.status === 'WAITING_FOR_VERIFICATION')
                       .filter(item => {
                         if (!searchTerm) return true;
                         return (item.booking_number || '').toLowerCase().includes(searchTerm.toLowerCase());
@@ -1225,7 +1225,16 @@ function App() {
                               <div style={{ display: 'flex', gap: '8px' }}>
                                 <button
                                   className="btn-primary"
-                                  style={{ padding: '0.6rem 1rem', fontSize: '0.8rem', background: '#10b981', borderColor: '#10b981' }}
+                                  style={{ 
+                                    padding: '0.6rem 1rem', 
+                                    fontSize: '0.8rem', 
+                                    background: isDecrypted ? '#10b981' : '#cbd5e1', 
+                                    borderColor: isDecrypted ? '#10b981' : '#cbd5e1',
+                                    color: isDecrypted ? '#fff' : '#64748b',
+                                    cursor: isDecrypted ? 'pointer' : 'not-allowed'
+                                  }}
+                                  disabled={!isDecrypted}
+                                  title={isDecrypted ? "Setujui & Terbitkan Resi" : "Silakan dekripsi data terlebih dahulu untuk memverifikasi detail paket"}
                                   onClick={async () => {
                                     const actualWeight = adminWeights[item.id] !== undefined ? adminWeights[item.id] : item.weight;
                                     if (!actualWeight || isNaN(parseFloat(actualWeight)) || parseFloat(actualWeight) <= 0) {
@@ -2095,7 +2104,9 @@ function App() {
                             ) : (
                               <div>
                                 <div style={{ fontWeight: 800, color: '#f59e0b' }}>{item.booking_number}</div>
-                                <div style={{ fontSize: '0.65rem', color: '#dc2626', fontWeight: 600 }}>Menunggu Verifikasi (Timbang)</div>
+                                <div style={{ fontSize: '0.65rem', color: (item.status === 'UNPAID' || item.status === 'ORDER_CREATED') ? '#ef4444' : '#dc2626', fontWeight: 600 }}>
+                                  {item.status === 'UNPAID' || item.status === 'ORDER_CREATED' ? 'Belum Dibayar' : 'Menunggu Verifikasi (Timbang)'}
+                                </div>
                               </div>
                             )}
                           </td>
@@ -2127,9 +2138,29 @@ function App() {
                             </div>
                           </td>
                           <td>
-                            <span className={`status-badge status-${(item.status || '').toLowerCase().replace(/ /g, '')}`}>
-                              {item.status}
-                            </span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center' }}>
+                              <span className={`status-badge status-${(item.status || '').toLowerCase().replace(/_/g, '').replace(/ /g, '')}`}>
+                                {item.status === 'UNPAID' || item.status === 'ORDER_CREATED' ? 'BELUM DIBAYAR' : item.status}
+                              </span>
+                              {(item.status === 'UNPAID' || item.status === 'ORDER_CREATED') && (
+                                <button
+                                  className="btn-primary"
+                                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', background: '#10b981', borderColor: '#10b981', color: '#fff', cursor: 'pointer', borderRadius: '8px', fontWeight: 700 }}
+                                  onClick={async () => {
+                                    const { shippingCost } = parseItemData(item);
+                                    const insuranceFee = parseInt(decryptedData[`insurance_fee_${item.id}`]) || 0;
+                                    const totalCost = shippingCost + insuranceFee;
+                                    const confirmPay = window.confirm(`Lakukan pembayaran sebesar Rp ${totalCost.toLocaleString()} untuk Booking ${item.booking_number}?`);
+                                    if (confirmPay) {
+                                      await updateStatus(item.id, 'WAITING_FOR_VERIFICATION');
+                                      alert('Pembayaran Berhasil! Paket kini masuk dalam antrean verifikasi admin.');
+                                    }
+                                  }}
+                                >
+                                  💳 Bayar Sekarang
+                                </button>
+                              )}
+                            </div>
                           </td>
                           <td style={{ fontWeight: 600 }}>
                             {item.payment_method}
@@ -2305,7 +2336,7 @@ function App() {
                   onClick={async () => {
                     await updateStatus(checkoutData.id, 'WAITING_FOR_VERIFICATION');
                     setCheckoutData(null);
-                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_dashboard');
+                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_tracking');
                   }}
                   className="btn-primary" 
                   style={{ flex: 1, padding: '1rem', background: '#10b981', borderColor: '#10b981', color: '#fff', cursor: 'pointer' }}
@@ -2314,9 +2345,9 @@ function App() {
                 </button>
                 <button 
                   onClick={async () => {
-                    await updateStatus(checkoutData.id, 'WAITING_FOR_VERIFICATION');
+                    await updateStatus(checkoutData.id, 'UNPAID');
                     setCheckoutData(null);
-                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_dashboard');
+                    setCurrentView(user.role === 'admin' ? 'dashboard' : 'customer_tracking');
                   }}
                   className="btn-primary" 
                   style={{ flex: 1, padding: '1rem', background: '#64748b', borderColor: '#64748b', color: '#fff', cursor: 'pointer' }}
@@ -2471,7 +2502,8 @@ function App() {
         .status-readytoship { background: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
         .status-intransit { background: #eff6ff; color: #1d4ed8; border: 1px solid #dbeafe; }
         .status-delivered { background: #f0fdf4; color: #15803d; border: 1px solid #dcfce7; }
-        .status-order_created { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+        .status-order_created { background: #fef2f2; color: #991b1b; border: 1px solid #fee2e2; }
+        .status-unpaid { background: #fef2f2; color: #991b1b; border: 1px solid #fee2e2; }
         .status-waiting_for_verification { background: #fffbeb; color: #b45309; border: 1px solid #fef3c7; }
         .pulse-container { display: flex; align-items: center; gap: 8px; background: #f0fdf4; padding: 5px 12px; border-radius: 50px; border: 1px solid #dcfce7; }
         .pulse-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse-anim 1.5s infinite; }

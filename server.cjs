@@ -1,11 +1,32 @@
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 
 const app = express();
-const PORT = 5000;
 
-app.use(cors());
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    envContent.split(/\r?\n/).forEach((line) => {
+        const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+        if (!match) return;
+        const key = match[1];
+        let value = match[2];
+        const quoted = value.match(/^"(.*)"$/) || value.match(/^'(.*)'$/);
+        if (quoted) value = quoted[1];
+        if (!process.env[key]) process.env[key] = value;
+    });
+}
+
+const PORT = process.env.PORT || 5000;
+const SECRET_KEY = process.env.SECRET_KEY;
+const DB_FILE = process.env.DB_FILE || './ekspedisi.db';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const RESET_DB = process.env.RESET_DB === 'true';
+
+app.use(cors({ origin: CORS_ORIGIN }));
 app.use(express.json());
 
 // Log all requests
@@ -15,20 +36,22 @@ app.use((req, res, next) => {
 });
 
 // Robust Master Key for Windows Compatibility
-const SECRET_KEY = "EKSPRESIN_AJA_2026_MASTER_KEY";
 console.log(`System Security Initialized.`);
 
-const db = new sqlite3.Database('./ekspedisi.db', (err) => {
+const db = new sqlite3.Database(DB_FILE, (err) => {
     if (err) console.error(err.message);
 });
 
-// Reset table for fresh testing with fixed encryption
+// Create tables and optionally reset database only when RESET_DB=true
 db.serialize(() => {
-    db.run(`DROP TABLE IF EXISTS shipments`); 
-    db.run(`DROP TABLE IF EXISTS users`); 
-    db.run(`DROP TABLE IF EXISTS branches`); 
-    db.run(`DROP TABLE IF EXISTS address_book`); 
-    db.run(`DROP TABLE IF EXISTS audit_logs`); 
+    if (RESET_DB) {
+        console.log('RESET_DB=true: dropping existing tables before recreating.');
+        db.run(`DROP TABLE IF EXISTS shipments`);
+        db.run(`DROP TABLE IF EXISTS users`);
+        db.run(`DROP TABLE IF EXISTS branches`);
+        db.run(`DROP TABLE IF EXISTS address_book`);
+        db.run(`DROP TABLE IF EXISTS audit_logs`);
+    }
 
     db.run(`CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
