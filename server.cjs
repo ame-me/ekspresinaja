@@ -140,11 +140,11 @@ db.serialize(() => {
  */
 function chacha20Block(key, nonce, counter) {
     const state = new Uint32Array(16);
-    
+
     // Key (32 bytes)
     const k = Buffer.alloc(32, 0);
     Buffer.from(key).copy(k);
-    
+
     // Nonce (12 bytes)
     const n = Buffer.from(nonce, 'base64');
 
@@ -218,7 +218,7 @@ app.post('/api/login', (req, res) => {
 
 app.post('/api/register', (req, res) => {
     const { username, password } = req.body;
-    db.run("INSERT INTO users (username, password, role) VALUES (?, ?, 'customer')", [username, password], function(err) {
+    db.run("INSERT INTO users (username, password, role) VALUES (?, ?, 'customer')", [username, password], function (err) {
         if (err) {
             if (err.message.includes('UNIQUE constraint failed')) {
                 return res.status(400).json({ error: 'Username sudah terdaftar!' });
@@ -239,7 +239,7 @@ app.get('/api/branches', (req, res) => {
 
 app.post('/api/branches', (req, res) => {
     const { name, address } = req.body;
-    db.run("INSERT INTO branches (name, address) VALUES (?, ?)", [name, address], function(err) {
+    db.run("INSERT INTO branches (name, address) VALUES (?, ?)", [name, address], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: this.lastID, name, address });
     });
@@ -247,7 +247,7 @@ app.post('/api/branches', (req, res) => {
 
 app.delete('/api/branches/:id', (req, res) => {
     const id = parseInt(req.params.id);
-    db.run("DELETE FROM branches WHERE id = ?", [id], function(err) {
+    db.run("DELETE FROM branches WHERE id = ?", [id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Success' });
     });
@@ -267,7 +267,7 @@ app.post('/api/address-book', (req, res) => {
     db.run(
         "INSERT INTO address_book (user_id, name, phone, province, city, district, street, rt, rw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [userId, name, phone, province, city, district, street, rt, rw],
-        function(err) {
+        function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ id: this.lastID });
         }
@@ -280,7 +280,7 @@ app.put('/api/address-book/:id', (req, res) => {
     db.run(
         "UPDATE address_book SET name = ?, phone = ?, province = ?, city = ?, district = ?, street = ?, rt = ?, rw = ? WHERE id = ?",
         [name, phone, province, city, district, street, rt, rw, addressId],
-        function(err) {
+        function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ message: 'Success' });
         }
@@ -289,7 +289,7 @@ app.put('/api/address-book/:id', (req, res) => {
 
 app.delete('/api/address-book/:id', (req, res) => {
     const addressId = parseInt(req.params.id);
-    db.run("DELETE FROM address_book WHERE id = ?", [addressId], function(err) {
+    db.run("DELETE FROM address_book WHERE id = ?", [addressId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Success' });
     });
@@ -305,7 +305,7 @@ app.get('/api/audit-logs', (req, res) => {
 
 app.post('/api/audit-logs', (req, res) => {
     const { username, action } = req.body;
-    db.run("INSERT INTO audit_logs (username, action) VALUES (?, ?)", [username, action], function(err) {
+    db.run("INSERT INTO audit_logs (username, action) VALUES (?, ?)", [username, action], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: this.lastID });
     });
@@ -315,7 +315,7 @@ app.post('/api/audit-logs', (req, res) => {
 app.get('/api/shipments', (req, res) => {
     const customerId = req.query.customer_id;
     console.log(`GET /api/shipments - Fetching data. Customer ID filter: ${customerId || 'none'}`);
-    
+
     let query = "SELECT * FROM shipments";
     const params = [];
     if (customerId) {
@@ -331,7 +331,7 @@ app.get('/api/shipments', (req, res) => {
 });
 
 app.post('/api/shipments', (req, res) => {
-    const { 
+    const {
         senderName, senderPhone, senderKec, senderAddr,
         receiverName, receiverPhone, receiverKec, receiverAddr,
         itemName, itemCategory, itemDesc, insuranceValue, itemValue, service, weight,
@@ -339,11 +339,11 @@ app.post('/api/shipments', (req, res) => {
         itemNotes, courierNotes, quantity, length, width, height,
         customerId, roleType, deliveryType, branchName
     } = req.body;
-    
+
     const booking_number = 'BOOK-' + Math.random().toString(36).substr(2, 7).toUpperCase();
     const nonce = Buffer.alloc(12);
     for (let i = 0; i < 12; i++) nonce[i] = Math.floor(Math.random() * 256);
-    
+
     const nonceB64 = nonce.toString('base64');
     const enc = (data) => (data !== undefined && data !== null && data !== '') ? processChaCha20(SECRET_KEY, nonceB64, data.toString()).toString('base64') : '';
 
@@ -362,7 +362,7 @@ app.post('/api/shipments', (req, res) => {
         quantity, length, width, height, customer_id, role_type, delivery_type, branch_name
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
-            booking_number, null, 
+            booking_number, null,
             enc(senderName), enc(senderPhone), enc(senderKec), enc(senderAddr),
             enc(receiverName), enc(receiverPhone), receiverKec, enc(receiverAddr),
             enc(itemName), enc(itemCategory), enc(itemDesc), itemNotes, courierNotes,
@@ -372,7 +372,7 @@ app.post('/api/shipments', (req, res) => {
             quantity || 1, length || 0, width || 0, height || 0,
             customerId || null, roleType || 'sender', deliveryType || 'pickup', branchName || null
         ],
-        function(err) {
+        function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ id: this.lastID, booking_number });
         }
@@ -382,7 +382,7 @@ app.post('/api/shipments', (req, res) => {
 app.put('/api/shipments/:id/status', (req, res) => {
     const shipmentId = parseInt(req.params.id);
     const { status } = req.body;
-    db.run(`UPDATE shipments SET status = ? WHERE id = ?`, [status, shipmentId], function(err) {
+    db.run(`UPDATE shipments SET status = ? WHERE id = ?`, [status, shipmentId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Success' });
     });
@@ -391,17 +391,17 @@ app.put('/api/shipments/:id/status', (req, res) => {
 app.put('/api/shipments/:id/verify', (req, res) => {
     const shipmentId = parseInt(req.params.id);
     const { weight } = req.body;
-    
+
     if (weight === undefined || isNaN(parseFloat(weight)) || parseFloat(weight) <= 0) {
         return res.status(400).json({ error: 'Berat aktual tidak valid!' });
     }
-    
+
     const tracking_number = 'JP' + Math.floor(1000000000 + Math.random() * 9000000000);
-    
+
     db.run(
         `UPDATE shipments SET status = 'READY_TO_SHIP', weight = ?, tracking_number = ? WHERE id = ?`,
         [parseFloat(weight), tracking_number, shipmentId],
-        function(err) {
+        function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ message: 'Success', tracking_number });
         }
